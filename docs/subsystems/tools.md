@@ -162,7 +162,7 @@ Registration is a trusted same-process contract. The registry borrows the typed 
 
 ## `ToolRestriction` — one scope's live filter over what it inherits
 
-`ToolRestriction` applies to the tools a scope inherits: the deployment-global layer plus every ancestor scope on its chain. The registry compiles readonly names into private sets, intersects multiple restrictions, then overlays the scope's OWN registrations, which stay exempt so a delegated child keeps the tools it answers through. A deny-only filter admits later unlisted inherited tools, while an allow-list excludes them. `includeOwn: true` applies the same allow and deny sets to the viewing scope's own registrations, so an own tool must be listed by every such allow-list and absent from every such deny-list. `ctx.tools.catalog(scope)` reads the complete registered definitions after near-scope shadowing, before restrictions and step-time conditions; it grants no visibility or execution admission.
+`ToolRestriction` applies to the tools a scope inherits: the deployment-global layer plus every ancestor scope on its chain. The registry compiles readonly names into private sets and intersects multiple restrictions over inherited tools; the viewing scope's OWN registrations are filtered only by that same scope's `includeOwn` filter. A deny-only filter admits later unlisted inherited tools, while an allow-list excludes them. `includeOwn: true` applies the allow and deny sets to the declaring scope's own registrations too, so those must be listed by every such allow-list and absent from every such deny-list; an ancestor's filter never masks a descendant's own registrations. `ctx.tools.catalog(scope)` reads the model-facing schema of every registered name after near-scope shadowing, before restrictions and step-time conditions; it detaches parameters, omits execution and presentation callbacks, and grants no visibility or execution admission.
 
 ```ts type-equiv
 /**
@@ -667,8 +667,9 @@ register(definition: ToolDefinition, options: ToolRegistrationOptions = {}): () 
 
 /**
  * Restrict inherited tools for the calling agent scope. Empty filters, unknown
- * names, and reserved transport names fail. Restrictions intersect; own
- * registrations remain visible unless `includeOwn` is true.
+ * names, and reserved transport names fail. Restrictions intersect over
+ * inherited tools; `includeOwn` also filters this scope's own registrations,
+ * never a descendant's.
  * @param filter - allow/deny mask over inherited names, with optional own inclusion.
  * @returns the exact disposer that lifts this restriction.
  */
@@ -676,12 +677,15 @@ restrict(filter: ToolRestriction): () => void
 
 /**
  * Read the complete registered catalog after near-scope shadowing, before
- * restrictions and step-time conditions. The catalog grants no execution
- * admission; `view()` remains the sole source for visibility and execution.
+ * restrictions and step-time conditions. Entries are projected onto the
+ * model-facing schema fields; execution and presentation callbacks are never
+ * returned and parameters are a detached copy. The catalog grants no
+ * execution admission; `view()` remains the sole source for visibility and
+ * execution.
  * @param scope - the viewing scope (the agent); omitted = the global view.
- * @returns registered definitions with exactly one entry per name.
+ * @returns one model-facing schema per registered name.
  */
-catalog(scope?: ScopeKey): readonly ToolDefinition[]
+catalog(scope?: ScopeKey): ToolSchema[]
 
 /**
  * Look up a tool as one scope sees it (scoped
