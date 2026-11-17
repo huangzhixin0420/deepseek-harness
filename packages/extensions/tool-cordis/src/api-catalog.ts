@@ -4336,15 +4336,15 @@ export const SERVICE_API: readonly ServiceApiEntry[] = [
       },
       {
         signature: 'restrict(filter: ToolRestriction): () => void',
-        description: 'Restrict inherited tools for the calling agent scope. Empty filters, unknown names, and reserved transport names fail. Restrictions intersect; own registrations remain visible unless `includeOwn` is true.',
+        description: 'Restrict inherited tools for the calling agent scope. Empty filters, unknown names, and reserved transport names fail. Restrictions intersect over inherited tools; `includeOwn` also filters this scope\'s own registrations, never a descendant\'s.',
         parameters: [{ name: 'filter', description: 'allow/deny mask over inherited names, with optional own inclusion.' }],
         returns: 'the exact disposer that lifts this restriction.',
       },
       {
-        signature: 'catalog(scope?: ScopeKey): readonly ToolDefinition[]',
-        description: 'Read the complete registered catalog after near-scope shadowing, before restrictions and step-time conditions. The catalog grants no execution admission; `view()` remains the sole source for visibility and execution.',
+        signature: 'catalog(scope?: ScopeKey): ToolSchema[]',
+        description: 'Read the complete registered catalog after near-scope shadowing, before restrictions and step-time conditions. Entries are projected onto the model-facing schema fields; execution and presentation callbacks are never returned and parameters are a detached copy. The catalog grants no execution admission; `view()` remains the sole source for visibility and execution.',
         parameters: [{ name: 'scope', description: 'the viewing scope (the agent); omitted = the global view.' }],
-        returns: 'registered definitions with exactly one entry per name.',
+        returns: 'one model-facing schema per registered name.',
       },
       {
         signature: 'get(name: string, scope?: ScopeKey, toolSet?: ResolvedToolSet): ToolDefinition | undefined',
@@ -10256,7 +10256,7 @@ export const TYPE_API: readonly TypeApiEntry[] = [
   },
   {
     name: 'ToolsService',
-    declaration: 'export class ToolsService extends Service {\n    static inject;\n    static Config;\n    constructor(ctx: Context);\n    register(definition: ToolDefinition, options: ToolRegistrationOptions = {}): () => void;\n    restrict(filter: ToolRestriction): () => void;\n    catalog(scope?: ScopeKey): readonly ToolDefinition[];\n    get(name: string, scope?: ScopeKey, toolSet?: ResolvedToolSet): ToolDefinition | undefined;\n    executable(name: string, scope?: ScopeKey, toolSet?: ResolvedToolSet): ToolDefinition | undefined;\n    async resolve(context: ToolActivationContext): Promise<ResolvedToolSet>;\n    definitions(scope?: ScopeKey, toolSet?: ResolvedToolSet): readonly ToolDefinition[];\n    schemas(scope?: ScopeKey, toolSet?: ResolvedToolSet): ToolSchema[];\n    setExecutor(executor: ToolExecutor): () => void;\n    async execute(input: ToolBatchInput): Promise<ToolBatchResult>;\n    guard(guard: ToolGuard): () => void;\n    checkGuards(exec: ToolExecution): ToolGuardDenial | undefined;\n}',
+    declaration: 'export class ToolsService extends Service {\n    static inject;\n    static Config;\n    constructor(ctx: Context);\n    register(definition: ToolDefinition, options: ToolRegistrationOptions = {}): () => void;\n    restrict(filter: ToolRestriction): () => void;\n    catalog(scope?: ScopeKey): ToolSchema[];\n    get(name: string, scope?: ScopeKey, toolSet?: ResolvedToolSet): ToolDefinition | undefined;\n    executable(name: string, scope?: ScopeKey, toolSet?: ResolvedToolSet): ToolDefinition | undefined;\n    async resolve(context: ToolActivationContext): Promise<ResolvedToolSet>;\n    definitions(scope?: ScopeKey, toolSet?: ResolvedToolSet): readonly ToolDefinition[];\n    schemas(scope?: ScopeKey, toolSet?: ResolvedToolSet): ToolSchema[];\n    setExecutor(executor: ToolExecutor): () => void;\n    async execute(input: ToolBatchInput): Promise<ToolBatchResult>;\n    guard(guard: ToolGuard): () => void;\n    checkGuards(exec: ToolExecution): ToolGuardDenial | undefined;\n}',
   },
   {
     name: 'ToolUpdate',

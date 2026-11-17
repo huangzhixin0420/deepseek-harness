@@ -54,8 +54,8 @@ interface ToolView {
   readonly visible: ReadonlyMap<string, ToolDefinition>
   /** Registrations behind {@link visible}, keyed by the same names. */
   readonly registrations: ReadonlyMap<string, ToolRegistration>
-  /** All registered definitions after near-scope shadowing, before restrictions. */
-  readonly catalog: ReadonlyMap<string, ToolDefinition>
+  /** Registrations exposed by `catalog()`, before restrictions. */
+  readonly catalog: ReadonlyMap<string, ToolRegistration>
   /** Pre-restriction capability names used by prompt-order validation. */
   readonly knownNames: ReadonlySet<string>
   /** Current global names that a scoped restriction may name. */
@@ -86,14 +86,6 @@ class ToolLayer implements ScopeLayer {
         || (filter.deny !== undefined && filter.deny.has(name))) return false
     }
     return true
-  }
-
-  /** Whether any compiled restriction masks own registrations by name. */
-  includesOwn(): boolean {
-    for (const filter of this.restrictions.values()) {
-      if (filter.includeOwn) return true
-    }
-    return false
   }
 
 }
@@ -166,8 +158,9 @@ export class ToolsService extends Service {
 
   /**
    * Restrict inherited tools for the calling agent scope. Empty filters, unknown
-   * names, and reserved transport names fail. Restrictions intersect; own
-   * registrations remain visible unless `includeOwn` is true.
+   * names, and reserved transport names fail. Restrictions intersect over
+   * inherited tools; `includeOwn` also filters this scope's own registrations,
+   * never a descendant's.
    * @param filter - allow/deny mask over inherited names, with optional own inclusion.
    * @returns the exact disposer that lifts this restriction.
    */
@@ -205,9 +198,9 @@ export class ToolsService extends Service {
   /**
    * Resolve visible tools, pre-restriction names, and the complete registry
    * catalog. Restrictions across the scope chain intersect over inherited tools;
-   * restrictions with `includeOwn` also filter the viewing scope's own tools.
-   * Nearer registrations shadow farther ones. Pre-restriction names support
-   * restriction and prompt-order validation.
+   * each scope's `includeOwn` restriction filters only that scope's own tools,
+   * never a descendant's. Nearer registrations shadow farther ones.
+   * Pre-restriction names support restriction and prompt-order validation.
    * @param scope - the viewing scope (the agent), or undefined for the global view.
    * @returns the complete derived view for that scope.
    */
@@ -221,8 +214,8 @@ export class ToolsService extends Service {
     }
     const visible = new Map<string, ToolDefinition>()
     const registrations = new Map<string, ToolRegistration>()
-    const catalog = new Map<string, ToolDefinition>()
-    for (const [name, registration] of inherited) catalog.set(name, registration.definition)
+    const catalog = new Map<string, ToolRegistration>()
+    for (const [name, registration] of inherited) catalog.set(name, registration)
     const knownNames = new Set<string>()
     const restrictableNames = new Set<string>()
     for (const [name, registration] of inherited) {
@@ -236,8 +229,8 @@ export class ToolsService extends Service {
     if (own !== undefined) {
       for (const [name, registration] of own.tools.entries()) {
         knownNames.add(name)
-        catalog.set(name, registration.definition)
-        if (layers.some(layer => layer.includesOwn() && !layer.admits(name, true))) continue
+        catalog.set(name, registration)
+        if (!own.admits(name, true)) continue
         visible.set(name, registration.definition)
         registrations.set(name, registration)
       }
@@ -247,13 +240,17 @@ export class ToolsService extends Service {
 
   /**
    * Read the complete registered catalog after near-scope shadowing, before
-   * restrictions and step-time conditions. The catalog grants no execution
-   * admission; `view()` remains the sole source for visibility and execution.
+   * restrictions and step-time conditions. Entries are projected onto the
+   * model-facing schema fields; execution and presentation callbacks are never
+   * returned and parameters are a detached copy. The catalog grants no
+   * execution admission; `view()` remains the sole source for visibility and
+   * execution.
    * @param scope - the viewing scope (the agent); omitted = the global view.
-   * @returns registered definitions with exactly one entry per name.
+   * @returns one model-facing schema per registered name.
    */
-  catalog(scope?: ScopeKey): readonly ToolDefinition[] {
+  catalog(scope?: ScopeKey): ToolSchema[] {
     return [...this.view(scope).catalog.values()]
+      .map(({ definition }) => projectToolSchema(definition, true))
   }
 
   /**

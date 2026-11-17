@@ -11,6 +11,7 @@ import type { PreToolDecision, ToolDefinition, ToolExecution, ToolExecutionInput
 import type { Agent } from '@deepseek-ai/dsh-agent'
 
 import { ToolCallId } from '@deepseek-ai/dsh-llm'
+import type { ToolSchema } from '@deepseek-ai/dsh-llm'
 import type { SessionId } from '@deepseek-ai/dsh-session'
 
 const testToolSignal = new AbortController().signal
@@ -263,6 +264,45 @@ describe('restrict() over an inherited scope layer', () => {
     expect(ctx.tools.schemas(child.key).map(t => t.name)).toEqual(['bash'])
     expect(ctx.tools.schemas(parent.key).map(t => t.name)).toEqual(['bash'])
   })
+
+  it('keeps a descendant\'s own registrations outside an ancestor includeOwn filter', async () => {
+    // includeOwn names the registrations of the scope that declares the
+    // filter; a descendant still answers through the tools it registers itself.
+    const ctx = await mount()
+    ctx.tools.register(tool('global'))
+    const parent = await mintAgentScope(ctx, 'parent')
+    parent.scope.ctx.tools.register(tool('ancestor'))
+    parent.scope.ctx.tools.restrict({ allow: ['ancestor'], includeOwn: true })
+    const child = await mintChild(ctx, parent.key, 'child')
+    child.scope.ctx.tools.register(tool('report'))
+
+    expect(ctx.tools.schemas(child.key).map(t => t.name).sort()).toEqual(['ancestor', 'report'])
+    expect(await run(ctx, 'report', child.key)).toBe('ran:report')
+    expect(await run(ctx, 'ancestor', child.key)).toBe('ran:ancestor')
+    // The ancestor's allow-list still filters every tool the child inherits.
+    expect(await run(ctx, 'global', child.key)).toBe('Error: unknown tool "global"')
+    expect(ctx.tools.catalog(child.key).map(t => t.name).sort()).toEqual(['ancestor', 'global', 'report'])
+    // And it still admits the ancestor's own registrations by name.
+    expect(ctx.tools.schemas(parent.key).map(t => t.name)).toEqual(['ancestor'])
+  })
+
+  it('keeps sibling agents\' own registrations isolated', async () => {
+    const ctx = await mount()
+    const parent = await mintAgentScope(ctx, 'parent')
+    parent.scope.ctx.tools.register(tool('shared'))
+    parent.scope.ctx.tools.restrict({ allow: ['shared'], includeOwn: true })
+    const first = await mintChild(ctx, parent.key, 'first')
+    const second = await mintChild(ctx, parent.key, 'second')
+    first.scope.ctx.tools.register(tool('first-only'))
+    second.scope.ctx.tools.register(tool('second-only'))
+
+    expect(ctx.tools.schemas(first.key).map(t => t.name).sort()).toEqual(['first-only', 'shared'])
+    expect(ctx.tools.schemas(second.key).map(t => t.name).sort()).toEqual(['second-only', 'shared'])
+    expect(await run(ctx, 'first-only', first.key)).toBe('ran:first-only')
+    expect(await run(ctx, 'second-only', first.key)).toBe('Error: unknown tool "second-only"')
+    expect(await run(ctx, 'second-only', second.key)).toBe('ran:second-only')
+    expect(ctx.tools.schemas(parent.key).map(t => t.name)).toEqual(['shared'])
+  })
 })
 
 describe('optional own admission and catalog()', () => {
@@ -348,6 +388,35 @@ describe('optional own admission and catalog()', () => {
     expect(ctx.tools.executable('scheduled', key)).toBeUndefined()
     expect(await run(ctx, 'bash', key)).toBe('Error: unknown tool "bash"')
     expect(await run(ctx, 'scheduled', key)).toBe('Error: unknown tool "scheduled"')
+  })
+
+  it('projects catalog() entries onto the model-facing schema fields', async () => {
+    const ctx = await mount()
+    const { scope, key } = await mintAgentScope(ctx, 'a')
+    const parameters = { type: 'object', properties: { target: { type: 'string' } } }
+    scope.ctx.tools.register({
+      ...tool('presented'),
+      parameters,
+      presentCall: () => undefined,
+      presentResult: () => undefined,
+      projectContent: () => undefined,
+      finalizeContent: () => undefined,
+      isConcurrencySafe: () => true,
+    })
+
+    const [entry] = ctx.tools.catalog(key)
+    expectTypeOf(entry!).toEqualTypeOf<ToolSchema>()
+    expect(entry).toStrictEqual({ name: 'presented', description: 'tool presented', parameters })
+    expect(Object.keys(entry!).sort()).toEqual(['description', 'name', 'parameters'])
+    expect(entry).not.toHaveProperty('execute')
+    expect(entry).not.toHaveProperty('output')
+    expect(entry).not.toHaveProperty('presentCall')
+    expect(entry).not.toHaveProperty('presentResult')
+
+    ;(entry!.parameters as { properties?: unknown }).properties = { injected: { type: 'string' } }
+    expect(parameters.properties).toEqual({ target: { type: 'string' } })
+    expect(ctx.tools.get('presented', key)?.parameters).toEqual({ type: 'object', properties: { target: { type: 'string' } } })
+    expect(await run(ctx, 'presented', key)).toBe('ran:presented')
   })
 
   it('catalog() keeps only the nearest definition for a duplicate name', async () => {
