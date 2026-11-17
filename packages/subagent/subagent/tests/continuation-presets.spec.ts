@@ -15,6 +15,7 @@ import { mountAgentLoopTestDependencies } from '@deepseek-ai/dsh-agent-loop-test
 import AgentPresets from '@deepseek-ai/dsh-agent-preset-registry'
 import { HarnessError } from '@deepseek-ai/dsh-error'
 import { createUserMessage } from '@deepseek-ai/dsh-llm'
+import { defineTool } from '@deepseek-ai/dsh-tools'
 import type { SessionId } from '@deepseek-ai/dsh-session'
 import * as JsonlSessionPersistence from '@deepseek-ai/dsh-session-persistence-jsonl'
 import { managerState, subagentManager } from './manager-internals.ts'
@@ -293,6 +294,71 @@ describe('continuable child presets', () => {
     expect((adapter.requests[0]?.tools ?? []).map(tool => tool.name)).toEqual([])
     expect(JSON.stringify(adapter.requests[0]?.messages.filter(message => message.role === 'system')))
       .toContain('Historical child persona.')
+  })
+
+  it('restores an own-inclusive tool filter from a historical descriptor', async () => {
+    const { ctx, parent, adapter } = await setup()
+    parkParent(ctx, parent)
+    const ownScoped = brandString<SessionId>('own-filtered-child')
+    const inheritedOnly = brandString<SessionId>('inherited-filtered-child')
+    const historical = await ctx.agents.create({
+      sessionId: ownScoped,
+      meta: { parentSession: parent.id, origin: 'subagent', delegationDepth: 1 },
+      setup: (childCtx, child) => {
+        child.session.append('subagent/descriptor', snapshotSubagentDescriptor({
+          mode: 'continuable', provider: 'separate', label: 'own-scoped',
+          agentProvider: 'mock', agentModel: 'mock',
+          toolFilter: { allow: [], includeOwn: true },
+        }))
+        ctx.agentPresets.composeFrom(childCtx, parent.ctx)
+      },
+    })
+    const historicalInherited = await ctx.agents.create({
+      sessionId: inheritedOnly,
+      meta: { parentSession: parent.id, origin: 'subagent', delegationDepth: 1 },
+      setup: (childCtx, child) => {
+        child.session.append('subagent/descriptor', snapshotSubagentDescriptor({
+          mode: 'continuable', provider: 'separate', label: 'inherited-only',
+          agentProvider: 'mock', agentModel: 'mock',
+          toolFilter: { allow: [] },
+        }))
+        ctx.agentPresets.composeFrom(childCtx, parent.ctx)
+      },
+    })
+    for (const [childId, createdAt, label] of [
+      [ownScoped, historical.agent.session.header.createdAt, 'own-scoped'],
+      [inheritedOnly, historicalInherited.agent.session.header.createdAt, 'inherited-only'],
+    ] as const) {
+      parent.session.append('subagent/catalog', {
+        version: 0, childId, childCreatedAt: createdAt, mode: 'continuable', label,
+      })
+    }
+    await historical.dispose()
+    await historicalInherited.dispose()
+    ctx.on('agent/created', ({ agent }) => {
+      if (agent.id !== ownScoped && agent.id !== inheritedOnly) return
+      agent.ctx.tools.register(defineTool({
+        name: 'own_tool',
+        description: 'registered by the child itself',
+        parameters: {},
+        output: {
+          schema: { type: 'object', additionalProperties: false, properties: {} },
+          render: () => [{ type: 'text', text: 'own' }],
+        },
+        execute: () => Promise.resolve({}),
+      }))
+    })
+
+    await continueChild(ctx, ownScoped)
+    const ownStored = await settled(ctx, ownScoped)
+    await continueChild(ctx, inheritedOnly)
+    const inheritedStored = await settled(ctx, inheritedOnly)
+    expect(ownStored.events.find(event => event.type === 'subagent/descriptor')?.data)
+      .toMatchObject({ toolFilter: { allow: [], includeOwn: true } })
+    expect(inheritedStored.events.find(event => event.type === 'subagent/descriptor')?.data)
+      .toMatchObject({ toolFilter: { allow: [] } })
+    expect(adapter.requests.map(request => (request.tools ?? []).map(tool => tool.name)))
+      .toEqual([[], ['own_tool']])
   })
 
   it('restores a fork from its own later preset selection', async () => {

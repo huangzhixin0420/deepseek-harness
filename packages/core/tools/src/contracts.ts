@@ -389,14 +389,18 @@ export type PostToolDecision =
   | { kind: 'block'; feedback: ContentBlock[]; info?: ToolErrorInfo; additionalContexts?: UserMessage[] }
 
 /**
- * Per-scope filter over global tools. Restrictions intersect and do not affect
- * scoped registrations or the reserved PTC mode transport.
+ * Per-scope filter over tools the scope inherits. Restrictions intersect and
+ * never affect the reserved PTC mode transport. `includeOwn` also applies the
+ * filter to the viewing scope's own registrations; its omission preserves the
+ * inherited-only behavior where own registrations remain visible.
  */
 export interface ToolRestriction {
-  /** Global tool names that stay visible; everything else is removed. */
+  /** Inherited tool names that stay visible; everything else is removed. */
   readonly allow?: readonly string[]
-  /** Global tool names removed from visibility. */
+  /** Inherited tool names removed from visibility. */
   readonly deny?: readonly string[]
+  /** Apply the same filter to own registrations; defaults to `false`. */
+  readonly includeOwn?: boolean
 }
 
 /**

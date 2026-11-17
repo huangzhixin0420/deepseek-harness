@@ -156,6 +156,28 @@ it('propagates cancellation after an asynchronous condition settles', async () =
   expect(h.calls()).toBe(0)
 })
 
+it('applies includeOwn restrictions to a new resolve and an existing step admission', async () => {
+  const h = await setup()
+  h.ctx.tools.register(h.tool, { when: () => true })
+  const own = {
+    ...h.tool,
+    name: 'scoped_tool',
+    description: 'A scoped tool.',
+  }
+  h.scope.ctx.tools.register(own, { when: () => true })
+  const toolSet = await h.resolve()
+  const lift = h.scope.ctx.tools.restrict({ allow: ['conditional', 'scoped_tool'], includeOwn: true })
+  h.scope.ctx.tools.restrict({ deny: ['scoped_tool'], includeOwn: true })
+
+  expect(h.ctx.tools.schemas(h.agent, await h.resolve()).map(tool => tool.name)).toEqual(['conditional'])
+  expect((await h.execute({ toolSet, name: 'scoped_tool' })).error?.info?.code).toBe('UNKNOWN_TOOL')
+  expect((await h.execute({ name: 'scoped_tool' })).error?.info?.code).toBe('UNKNOWN_TOOL')
+  lift()
+  expect((await h.execute({ toolSet, name: 'scoped_tool' })).error?.info?.code).toBe('UNKNOWN_TOOL')
+  expect((await h.execute({ name: 'scoped_tool' })).error?.info?.code).toBe('UNKNOWN_TOOL')
+  expect(h.calls()).toBe(0)
+})
+
 it('reports condition failures without treating them as disabled tools', async () => {
   const h = await setup()
   const cause = new Error('credential storage unavailable')

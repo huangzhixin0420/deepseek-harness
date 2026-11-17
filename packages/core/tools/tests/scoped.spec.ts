@@ -62,6 +62,16 @@ async function run(ctx: Context, name: string, agent?: Agent): Promise<string> {
   return first?.type === 'text' ? first.text : JSON.stringify(result.content)
 }
 
+/** Mint a child scope parented to `parentKey`, as a subagent's creation window does. */
+async function mintChild(ctx: Context, parentKey: Agent, name: string): Promise<{ scope: Scope; key: Agent }> {
+  const key = { id: name as SessionId } as Agent
+  bindScopeParent(key, parentKey)
+  let scope!: Scope
+  await ctx.plugin(Object.assign((inner: Context) => { scope = createScope(inner, key) },
+    { inject: ['tools', 'systemPrompt'] }))
+  return { scope, key }
+}
+
 describe('scoped tool registration', () => {
   it('keeps final-result observers synchronous', () => {
     type ToolResultListener = Events['tools/result']
@@ -206,16 +216,6 @@ describe('restrict()', () => {
 })
 
 describe('restrict() over an inherited scope layer', () => {
-  /** Mint a child scope parented to `parent`, as a subagent's creation window does. */
-  async function mintChild(ctx: Context, parentKey: Agent, name: string): Promise<{ scope: Scope; key: Agent }> {
-    const key = { id: name as SessionId } as Agent
-    bindScopeParent(key, parentKey)
-    let scope!: Scope
-    await ctx.plugin(Object.assign((inner: Context) => { scope = createScope(inner, key) },
-      { inject: ['tools', 'systemPrompt'] }))
-    return { scope, key }
-  }
-
   it('filters tools the child inherits from an ancestor scope, not only global ones', async () => {
     // The shape every preset deployment has: no model-facing row in the global
     // layer, all of them contributed by an ancestor scope the child joined.
@@ -263,6 +263,142 @@ describe('restrict() over an inherited scope layer', () => {
 
     expect(ctx.tools.schemas(child.key).map(t => t.name)).toEqual(['bash'])
     expect(ctx.tools.schemas(parent.key).map(t => t.name)).toEqual(['bash'])
+  })
+})
+
+describe('optional own admission and catalog()', () => {
+  function catalogNames(ctx: Context, scope?: Agent): string[] {
+    return ctx.tools.catalog(scope).map(definition => definition.name).sort()
+  }
+
+  it('keeps own tools exempt from default restrictions and lists masked tools in catalog()', async () => {
+    const ctx = await mount()
+    const { scope, key } = await mintAgentScope(ctx, 'a')
+    ctx.tools.register(tool('read'))
+    ctx.tools.register(tool('bash'))
+    scope.ctx.tools.register(tool('local'))
+    scope.ctx.tools.restrict({ allow: ['read'] })
+
+    expect(ctx.tools.schemas(key).map(t => t.name).sort()).toEqual(['local', 'read'])
+    expect(await run(ctx, 'local', key)).toBe('ran:local')
+    expect(await run(ctx, 'bash', key)).toBe('Error: unknown tool "bash"')
+    expect(() => scope.ctx.tools.restrict({ allow: ['local'] })).toThrow(/unknown global tool "local"/)
+    expect(catalogNames(ctx, key)).toEqual(['bash', 'local', 'read'])
+  })
+
+  it('admits only listed own and inherited tools with includeOwn: true', async () => {
+    const ctx = await mount()
+    const parent = await mintAgentScope(ctx, 'parent')
+    parent.scope.ctx.tools.register(tool('ancestor'))
+    const child = await mintChild(ctx, parent.key, 'child')
+    ctx.tools.register(tool('read'))
+    ctx.tools.register(tool('bash'))
+    child.scope.ctx.tools.register(tool('capture'))
+    child.scope.ctx.tools.register(tool('heartbeat'))
+    child.scope.ctx.tools.restrict({ allow: ['ancestor', 'capture'], includeOwn: true })
+
+    expect(ctx.tools.schemas(child.key).map(t => t.name).sort()).toEqual(['ancestor', 'capture'])
+    expect(await run(ctx, 'ancestor', child.key)).toBe('ran:ancestor')
+    expect(await run(ctx, 'capture', child.key)).toBe('ran:capture')
+    expect(await run(ctx, 'bash', child.key)).toBe('Error: unknown tool "bash"')
+    expect(await run(ctx, 'heartbeat', child.key)).toBe('Error: unknown tool "heartbeat"')
+    expect(catalogNames(ctx, child.key)).toEqual(['ancestor', 'bash', 'capture', 'heartbeat', 'read'])
+  })
+
+  it('lets includeOwn: true deny an own tool and restores it on dispose', async () => {
+    const ctx = await mount()
+    const { scope, key } = await mintAgentScope(ctx, 'a')
+    ctx.tools.register(tool('read'))
+    scope.ctx.tools.register(tool('capture'))
+    const lift = scope.ctx.tools.restrict({ deny: ['capture'], includeOwn: true })
+
+    expect(ctx.tools.schemas(key).map(t => t.name)).toEqual(['read'])
+    expect(await run(ctx, 'capture', key)).toBe('Error: unknown tool "capture"')
+    expect(catalogNames(ctx, key)).toEqual(['capture', 'read'])
+    lift()
+    expect(ctx.tools.schemas(key).map(t => t.name).sort()).toEqual(['capture', 'read'])
+    expect(await run(ctx, 'capture', key)).toBe('ran:capture')
+  })
+
+  it('hides a later own registration behind an existing includeOwn allow-list', async () => {
+    const ctx = await mount()
+    const { scope, key } = await mintAgentScope(ctx, 'a')
+    ctx.tools.register(tool('read'))
+    scope.ctx.tools.register(tool('capture'))
+    const lift = scope.ctx.tools.restrict({ allow: ['capture', 'read'], includeOwn: true })
+    scope.ctx.tools.register(tool('later'))
+
+    expect(ctx.tools.schemas(key).map(t => t.name).sort()).toEqual(['capture', 'read'])
+    expect(await run(ctx, 'later', key)).toBe('Error: unknown tool "later"')
+    expect(catalogNames(ctx, key)).toEqual(['capture', 'later', 'read'])
+    lift()
+    expect(ctx.tools.schemas(key).map(t => t.name).sort()).toEqual(['capture', 'later', 'read'])
+  })
+
+  it('catalog() includes masked and conditional registrations without granting execution', async () => {
+    const ctx = await mount()
+    const { scope, key } = await mintAgentScope(ctx, 'a')
+    ctx.tools.register(tool('read'))
+    ctx.tools.register(tool('bash'))
+    scope.ctx.tools.register(tool('capture'))
+    scope.ctx.tools.restrict({ allow: ['capture', 'read'], includeOwn: true })
+    scope.ctx.tools.register(tool('scheduled'), { when: () => false })
+
+    expect(catalogNames(ctx, key)).toEqual(['bash', 'capture', 'read', 'scheduled'])
+    expect(ctx.tools.catalog(key).find(t => t.name === 'scheduled')).toBeDefined()
+    expect(ctx.tools.executable('scheduled', key)).toBeUndefined()
+    expect(await run(ctx, 'bash', key)).toBe('Error: unknown tool "bash"')
+    expect(await run(ctx, 'scheduled', key)).toBe('Error: unknown tool "scheduled"')
+  })
+
+  it('catalog() keeps only the nearest definition for a duplicate name', async () => {
+    const ctx = await mount()
+    const { scope, key } = await mintAgentScope(ctx, 'a')
+    ctx.tools.register(tool('shadow', 'global-shadow'))
+    scope.ctx.tools.register({ ...tool('shadow', 'own-shadow'), description: 'own shadow' })
+
+    expect(ctx.tools.catalog(key).filter(t => t.name === 'shadow')).toHaveLength(1)
+    expect(ctx.tools.catalog(key).find(t => t.name === 'shadow')?.description).toBe('own shadow')
+    expect(ctx.tools.catalog().find(t => t.name === 'shadow')?.description).toBe('tool shadow')
+    expect(await run(ctx, 'shadow', key)).toBe('own-shadow')
+  })
+
+  it('keeps inherited names restrictable when an own tool has the same name', async () => {
+    const ctx = await mount()
+    const { scope, key } = await mintAgentScope(ctx, 'a')
+    ctx.tools.register(tool('shadow', 'global-shadow'))
+    ctx.tools.register(tool('bash', 'global-bash'))
+    scope.ctx.tools.register(tool('shadow', 'own-shadow'))
+    scope.ctx.tools.register(tool('local', 'own-local'))
+
+    const lift = scope.ctx.tools.restrict({ allow: ['shadow'] })
+
+    expect(ctx.tools.schemas(key).map(t => t.name).sort()).toEqual(['local', 'shadow'])
+    expect(ctx.tools.get('shadow', key)?.description).toBe('tool shadow')
+    expect(await run(ctx, 'shadow', key)).toBe('own-shadow')
+    expect(await run(ctx, 'local', key)).toBe('own-local')
+    expect(await run(ctx, 'bash', key)).toBe('Error: unknown tool "bash"')
+    expect(catalogNames(ctx, key)).toEqual(['bash', 'local', 'shadow'])
+    expect(ctx.tools.catalog(key).find(t => t.name === 'shadow')?.description).toBe('tool shadow')
+    lift()
+    expect(() => scope.ctx.tools.restrict({ allow: ['local'] }))
+      .toThrow(/unknown global tool "local"; known global tools: bash, shadow/)
+    expect(() => scope.ctx.tools.restrict({ allow: ['local', 'shadow'], includeOwn: true }))
+      .not.toThrow()
+  })
+
+  it('keeps run_code out of registration, restrictions, and catalog()', async () => {
+    const ctx = await mount()
+    const { scope, key } = await mintAgentScope(ctx, 'a')
+    ctx.tools.register(tool('read'))
+
+    expect(() => ctx.tools.register(tool('run_code')))
+      .toThrow(/tool name "run_code" is reserved.*cannot be registered/)
+    expect(() => scope.ctx.tools.restrict({ deny: ['run_code'] }))
+      .toThrow(/cannot name reserved PTC mode presentation transport "run_code"/)
+    expect(() => scope.ctx.tools.restrict({ deny: ['run_code'], includeOwn: true }))
+      .toThrow(/cannot name reserved PTC mode presentation transport "run_code"/)
+    expect(catalogNames(ctx, key)).toEqual(['read'])
   })
 })
 

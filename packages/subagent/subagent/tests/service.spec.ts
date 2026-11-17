@@ -527,6 +527,36 @@ describe('subagent descriptors', () => {
     data,
   } as unknown as SessionEvent<'subagent/descriptor'>)
 
+  it('persists the own-registration tool filter through a descriptor round trip', () => {
+    const stored: unknown = JSON.parse(JSON.stringify(snapshotSubagentDescriptor({
+      mode: 'continuable',
+      provider: 'spawn',
+      label: 'own-scoped child',
+      toolFilter: { allow: ['read'], includeOwn: true },
+    })))
+    expect(foldSubagentDescriptor([event(stored)])).toEqual({
+      version: SUBAGENT_DESCRIPTOR_VERSION,
+      mode: 'continuable',
+      provider: 'spawn',
+      label: 'own-scoped child',
+      toolFilter: { allow: ['read'], includeOwn: true },
+    })
+    expect(foldSubagentDescriptor([event({
+      version: SUBAGENT_DESCRIPTOR_VERSION,
+      mode: 'continuable',
+      provider: 'spawn',
+      label: 'inherited-only child',
+      toolFilter: { deny: ['bash'], includeOwn: false },
+    })])).toMatchObject({ toolFilter: { deny: ['bash'], includeOwn: false } })
+    expect(foldSubagentDescriptor([event({
+      version: SUBAGENT_DESCRIPTOR_VERSION,
+      mode: 'continuable',
+      provider: 'spawn',
+      label: 'absent flag child',
+      toolFilter: { deny: ['bash'] },
+    })])).toMatchObject({ toolFilter: { deny: ['bash'] } })
+  })
+
   it('omits absent fields, recovers a complete payload, and rejects unsupported versions', () => {
     expect(foldSubagentDescriptor([])).toBeUndefined()
     const minimal = {
@@ -698,6 +728,20 @@ describe('subagent descriptors', () => {
       label: 'l',
       toolFilter: { deny: [7] },
     }, 'toolFilter.deny must be an array of strings'],
+    ['non-boolean includeOwn', {
+      version: SUBAGENT_DESCRIPTOR_VERSION,
+      mode: 'continuable',
+      provider: 'spawn',
+      label: 'l',
+      toolFilter: { allow: ['read'], includeOwn: 'yes' },
+    }, 'toolFilter.includeOwn must be a boolean'],
+    ['tool filter with only includeOwn', {
+      version: SUBAGENT_DESCRIPTOR_VERSION,
+      mode: 'continuable',
+      provider: 'spawn',
+      label: 'l',
+      toolFilter: { includeOwn: true },
+    }, 'toolFilter must declare allow and/or deny'],
   ])('rejects a malformed persisted descriptor: %s', (_case, data, detail) => {
     expect(() => foldSubagentDescriptor([event(data)])).toThrow(detail)
   })

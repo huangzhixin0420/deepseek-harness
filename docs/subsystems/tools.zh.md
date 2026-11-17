@@ -162,18 +162,22 @@ type InferArgs<S> = InferProperties<S, []>
 
 ## `ToolRestriction` — 单个作用域对其继承内容的实时过滤器
 
-`ToolRestriction` 作用于该作用域继承来的工具：部署全局层，加上其链上的每个祖先作用域。注册表将 readonly 名称编译为私有集合，对多个限制取交集，再叠加该作用域**自身**的注册——后者不受约束，因此被委派的子 agent 会保留其回报所依赖的工具。仅 deny 的过滤器允许后续未列出的继承工具通过，而 allow 列表则排除它们。
+`ToolRestriction` 作用于该作用域继承来的工具：部署全局层，加上其链上的每个祖先作用域。注册表将 readonly 名称编译为私有集合，对多个限制取交集，再叠加该作用域**自身**的注册——后者不受约束，因此被委派的子 agent 会保留其回报所依赖的工具。仅 deny 的过滤器允许后续未列出的继承工具通过，而 allow 列表则排除它们。设置 `includeOwn: true` 后，同一 allow 与 deny 集合也作用于当前视角作用域自身的注册：自身工具必须在每个此类 allow 列表中列出，且不得出现在任何此类 deny 列表中。`ctx.tools.catalog(scope)` 读取近作用域遮蔽之后的全部已注册定义，不受限制和步骤条件影响；它不授予可见性或执行准入。
 
 ```ts type-equiv
 /**
- * Per-scope filter over global tools. Restrictions intersect and do not affect
- * scoped registrations or the reserved PTC mode transport.
+ * Per-scope filter over tools the scope inherits. Restrictions intersect and
+ * never affect the reserved PTC mode transport. `includeOwn` also applies the
+ * filter to the viewing scope's own registrations; its omission preserves the
+ * inherited-only behavior where own registrations remain visible.
  */
 interface ToolRestriction {
-  /** Global tool names that stay visible; everything else is removed. */
+  /** Inherited tool names that stay visible; everything else is removed. */
   readonly allow?: readonly string[]
-  /** Global tool names removed from visibility. */
+  /** Inherited tool names removed from visibility. */
   readonly deny?: readonly string[]
+  /** Apply the same filter to own registrations; defaults to `false`. */
+  readonly includeOwn?: boolean
 }
 ```
 
@@ -662,13 +666,22 @@ Concrete tool registry and scoped executor dispatcher.
 register(definition: ToolDefinition, options: ToolRegistrationOptions = {}): () => void
 
 /**
- * Restrict global tools for the calling agent scope. Empty filters, unknown
- * names, scope-local names, and reserved transport names fail. Restrictions
- * intersect; scoped registrations remain visible.
- * @param filter - global-tool mask: `allow` (keep only) and/or `deny` (remove).
+ * Restrict inherited tools for the calling agent scope. Empty filters, unknown
+ * names, and reserved transport names fail. Restrictions intersect; own
+ * registrations remain visible unless `includeOwn` is true.
+ * @param filter - allow/deny mask over inherited names, with optional own inclusion.
  * @returns the exact disposer that lifts this restriction.
  */
 restrict(filter: ToolRestriction): () => void
+
+/**
+ * Read the complete registered catalog after near-scope shadowing, before
+ * restrictions and step-time conditions. The catalog grants no execution
+ * admission; `view()` remains the sole source for visibility and execution.
+ * @param scope - the viewing scope (the agent); omitted = the global view.
+ * @returns registered definitions with exactly one entry per name.
+ */
+catalog(scope?: ScopeKey): readonly ToolDefinition[]
 
 /**
  * Look up a tool as one scope sees it (scoped
