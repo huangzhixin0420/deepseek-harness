@@ -162,18 +162,22 @@ Registration is a trusted same-process contract. The registry borrows the typed 
 
 ## `ToolRestriction` — one scope's live filter over what it inherits
 
-`ToolRestriction` applies to the tools a scope inherits: the deployment-global layer plus every ancestor scope on its chain. The registry compiles readonly names into private sets, intersects multiple restrictions, then overlays the scope's OWN registrations, which stay exempt so a delegated child keeps the tools it answers through. A deny-only filter admits later unlisted inherited tools, while an allow-list excludes them.
+`ToolRestriction` applies to the tools a scope inherits: the deployment-global layer plus every ancestor scope on its chain. The registry compiles readonly names into private sets, intersects multiple restrictions, then overlays the scope's OWN registrations, which stay exempt so a delegated child keeps the tools it answers through. A deny-only filter admits later unlisted inherited tools, while an allow-list excludes them. `includeOwn: true` applies the same allow and deny sets to the viewing scope's own registrations, so an own tool must be listed by every such allow-list and absent from every such deny-list. `ctx.tools.catalog(scope)` reads the complete registered definitions after near-scope shadowing, before restrictions and step-time conditions; it grants no visibility or execution admission.
 
 ```ts type-equiv
 /**
- * Per-scope filter over global tools. Restrictions intersect and do not affect
- * scoped registrations or the reserved PTC mode transport.
+ * Per-scope filter over tools the scope inherits. Restrictions intersect and
+ * never affect the reserved PTC mode transport. `includeOwn` also applies the
+ * filter to the viewing scope's own registrations; its omission preserves the
+ * inherited-only behavior where own registrations remain visible.
  */
 interface ToolRestriction {
-  /** Global tool names that stay visible; everything else is removed. */
+  /** Inherited tool names that stay visible; everything else is removed. */
   readonly allow?: readonly string[]
-  /** Global tool names removed from visibility. */
+  /** Inherited tool names removed from visibility. */
   readonly deny?: readonly string[]
+  /** Apply the same filter to own registrations; defaults to `false`. */
+  readonly includeOwn?: boolean
 }
 ```
 
@@ -662,13 +666,22 @@ Concrete tool registry and scoped executor dispatcher.
 register(definition: ToolDefinition, options: ToolRegistrationOptions = {}): () => void
 
 /**
- * Restrict global tools for the calling agent scope. Empty filters, unknown
- * names, scope-local names, and reserved transport names fail. Restrictions
- * intersect; scoped registrations remain visible.
- * @param filter - global-tool mask: `allow` (keep only) and/or `deny` (remove).
+ * Restrict inherited tools for the calling agent scope. Empty filters, unknown
+ * names, and reserved transport names fail. Restrictions intersect; own
+ * registrations remain visible unless `includeOwn` is true.
+ * @param filter - allow/deny mask over inherited names, with optional own inclusion.
  * @returns the exact disposer that lifts this restriction.
  */
 restrict(filter: ToolRestriction): () => void
+
+/**
+ * Read the complete registered catalog after near-scope shadowing, before
+ * restrictions and step-time conditions. The catalog grants no execution
+ * admission; `view()` remains the sole source for visibility and execution.
+ * @param scope - the viewing scope (the agent); omitted = the global view.
+ * @returns registered definitions with exactly one entry per name.
+ */
+catalog(scope?: ScopeKey): readonly ToolDefinition[]
 
 /**
  * Look up a tool as one scope sees it (scoped

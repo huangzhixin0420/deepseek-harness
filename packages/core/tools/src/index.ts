@@ -39,6 +39,7 @@ declare module '@deepseek-ai/cordis' {
 interface CompiledToolRestriction {
   readonly allow?: ReadonlySet<string>
   readonly deny?: ReadonlySet<string>
+  readonly includeOwn: boolean
 }
 
 /** One registered definition and its step-time activation condition. */
@@ -53,6 +54,8 @@ interface ToolView {
   readonly visible: ReadonlyMap<string, ToolDefinition>
   /** Registrations behind {@link visible}, keyed by the same names. */
   readonly registrations: ReadonlyMap<string, ToolRegistration>
+  /** All registered definitions after near-scope shadowing, before restrictions. */
+  readonly catalog: ReadonlyMap<string, ToolDefinition>
   /** Pre-restriction capability names used by prompt-order validation. */
   readonly knownNames: ReadonlySet<string>
   /** Current global names that a scoped restriction may name. */
@@ -75,13 +78,22 @@ class ToolLayer implements ScopeLayer {
     return this.tools.isEmpty() && this.restrictions.isEmpty()
   }
 
-  /** Whether every compiled restriction in this layer admits a global tool name. */
-  admits(name: string): boolean {
+  /** Whether every compiled restriction in this layer admits a name from one layer kind. */
+  admits(name: string, own: boolean): boolean {
     for (const filter of this.restrictions.values()) {
+      if (own && !filter.includeOwn) continue
       if ((filter.allow !== undefined && !filter.allow.has(name))
         || (filter.deny !== undefined && filter.deny.has(name))) return false
     }
     return true
+  }
+
+  /** Whether any compiled restriction masks own registrations by name. */
+  includesOwn(): boolean {
+    for (const filter of this.restrictions.values()) {
+      if (filter.includeOwn) return true
+    }
+    return false
   }
 
 }
@@ -153,10 +165,10 @@ export class ToolsService extends Service {
   }
 
   /**
-   * Restrict global tools for the calling agent scope. Empty filters, unknown
-   * names, scope-local names, and reserved transport names fail. Restrictions
-   * intersect; scoped registrations remain visible.
-   * @param filter - global-tool mask: `allow` (keep only) and/or `deny` (remove).
+   * Restrict inherited tools for the calling agent scope. Empty filters, unknown
+   * names, and reserved transport names fail. Restrictions intersect; own
+   * registrations remain visible unless `includeOwn` is true.
+   * @param filter - allow/deny mask over inherited names, with optional own inclusion.
    * @returns the exact disposer that lifts this restriction.
    */
   restrict(filter: ToolRestriction): () => void {
@@ -172,11 +184,13 @@ export class ToolsService extends Service {
     const compiled: CompiledToolRestriction = {
       ...allow !== undefined ? { allow: new Set(allow) } : {},
       ...deny !== undefined ? { deny: new Set(deny) } : {},
+      includeOwn: filter.includeOwn === true,
     }
     if ([...allow ?? [], ...deny ?? []].includes(RUN_CODE_NAME)) {
       throw new Error(`tools.restrict() cannot name reserved PTC mode presentation transport "${RUN_CODE_NAME}"; restrict end-capability tools instead`)
     }
-    const known = this.view(scope).restrictableNames
+    const view = this.view(scope)
+    const known = filter.includeOwn === true ? view.knownNames : view.restrictableNames
     const unknown = [...allow ?? [], ...deny ?? []].filter(name => !known.has(name))
     if (unknown.length > 0) {
       throw new Error(`tools.restrict() names unknown global tool${unknown.length > 1 ? 's' : ''} ${unknown.map(n => `"${n}"`).join(', ')}; known global tools: ${[...known].sort().join(', ') || '(none)'}`)
@@ -189,10 +203,11 @@ export class ToolsService extends Service {
   }
 
   /**
-   * Resolve visible tools and pre-restriction names. Restrictions across the
-   * scope chain intersect over inherited global and ancestor tools; the viewing
-   * scope's own registrations remain exempt. Nearer registrations shadow
-   * farther ones. Pre-restriction names support restriction and prompt-order validation.
+   * Resolve visible tools, pre-restriction names, and the complete registry
+   * catalog. Restrictions across the scope chain intersect over inherited tools;
+   * restrictions with `includeOwn` also filter the viewing scope's own tools.
+   * Nearer registrations shadow farther ones. Pre-restriction names support
+   * restriction and prompt-order validation.
    * @param scope - the viewing scope (the agent), or undefined for the global view.
    * @returns the complete derived view for that scope.
    */
@@ -206,12 +221,14 @@ export class ToolsService extends Service {
     }
     const visible = new Map<string, ToolDefinition>()
     const registrations = new Map<string, ToolRegistration>()
+    const catalog = new Map<string, ToolDefinition>()
+    for (const [name, registration] of inherited) catalog.set(name, registration.definition)
     const knownNames = new Set<string>()
     const restrictableNames = new Set<string>()
     for (const [name, registration] of inherited) {
       knownNames.add(name)
       restrictableNames.add(name)
-      if (layers.every(layer => layer.admits(name))) {
+      if (layers.every(layer => layer.admits(name, false))) {
         visible.set(name, registration.definition)
         registrations.set(name, registration)
       }
@@ -219,11 +236,24 @@ export class ToolsService extends Service {
     if (own !== undefined) {
       for (const [name, registration] of own.tools.entries()) {
         knownNames.add(name)
+        catalog.set(name, registration.definition)
+        if (layers.some(layer => layer.includesOwn() && !layer.admits(name, true))) continue
         visible.set(name, registration.definition)
         registrations.set(name, registration)
       }
     }
-    return { visible, registrations, knownNames, restrictableNames }
+    return { visible, registrations, catalog, knownNames, restrictableNames }
+  }
+
+  /**
+   * Read the complete registered catalog after near-scope shadowing, before
+   * restrictions and step-time conditions. The catalog grants no execution
+   * admission; `view()` remains the sole source for visibility and execution.
+   * @param scope - the viewing scope (the agent); omitted = the global view.
+   * @returns registered definitions with exactly one entry per name.
+   */
+  catalog(scope?: ScopeKey): readonly ToolDefinition[] {
+    return [...this.view(scope).catalog.values()]
   }
 
   /**

@@ -108,7 +108,7 @@ const CONTINUABLE_DESCRIPTOR_KEYS = new Set([
   'persona',
   'toolFilter',
 ])
-const TOOL_FILTER_KEYS = new Set(['allow', 'deny'])
+const TOOL_FILTER_KEYS = new Set(['allow', 'deny', 'includeOwn'])
 
 /** Whether a persisted JSON value is an object record. */
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -147,6 +147,16 @@ function optionalStringArray(value: Record<string, unknown>, key: string): strin
   return items as string[]
 }
 
+/** Read one optional boolean field from a persisted tool restriction. */
+function optionalBoolean(value: Record<string, unknown>, key: string): boolean | undefined {
+  if (!Object.hasOwn(value, key)) return undefined
+  const field = value[key]
+  if (typeof field !== 'boolean') {
+    throw new Error(`persisted subagent descriptor toolFilter.${key} must be a boolean`)
+  }
+  return field
+}
+
 /** Validate and reconstruct a persisted tool restriction. */
 function parseToolFilter(value: unknown): ToolRestriction {
   if (!isRecord(value)) {
@@ -155,12 +165,14 @@ function parseToolFilter(value: unknown): ToolRestriction {
   assertKnownKeys(value, TOOL_FILTER_KEYS, 'toolFilter')
   const allow = optionalStringArray(value, 'allow')
   const deny = optionalStringArray(value, 'deny')
+  const includeOwn = optionalBoolean(value, 'includeOwn')
   if (allow === undefined && deny === undefined) {
     throw new Error('persisted subagent descriptor toolFilter must declare allow and/or deny')
   }
   return {
     ...allow !== undefined ? { allow } : {},
     ...deny !== undefined ? { deny } : {},
+    ...includeOwn !== undefined ? { includeOwn } : {},
   }
 }
 
