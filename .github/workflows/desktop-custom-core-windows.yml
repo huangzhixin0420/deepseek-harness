@@ -78,14 +78,28 @@ jobs:
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           $record
           $record | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Append -Encoding utf8
+      - name: Guard free disk space before the baseline install
+        run: |
+          # Both checkouts and one build must fit; the guard prints the bytes CI records and fails closed.
+          $guard = Join-Path $env:GITHUB_WORKSPACE 'custom/apps/desktop/scripts/assert-custom-core-disk-space.ps1'
+          if (-not (Test-Path -LiteralPath $guard -PathType Leaf)) { throw "custom core disk: the guard is missing at $guard" }
+          & $guard -Stage 'before the baseline install' -Path $env:GITHUB_WORKSPACE, $env:RUNNER_TEMP
+          exit $LASTEXITCODE
       - name: Install locked dependencies for the baseline
         working-directory: baseline
         run: |
+          # Evidence for the shared pnpm: both checkouts pin the same packageManager and lockfileVersion.
+          $lockfile = Select-String -LiteralPath pnpm-lock.yaml -Pattern '^lockfileVersion:' | Select-Object -First 1
+          if ($null -eq $lockfile) { throw 'baseline: pnpm-lock.yaml declares no lockfileVersion' }
+          Write-Output "baseline: pnpm $((pnpm --version | Out-String).Trim()), $($lockfile.Line.Trim())"
           pnpm install --frozen-lockfile
           exit $LASTEXITCODE
       - name: Install locked dependencies for the custom package
         working-directory: custom
         run: |
+          $lockfile = Select-String -LiteralPath pnpm-lock.yaml -Pattern '^lockfileVersion:' | Select-Object -First 1
+          if ($null -eq $lockfile) { throw 'custom: pnpm-lock.yaml declares no lockfileVersion' }
+          Write-Output "custom: pnpm $((pnpm --version | Out-String).Trim()), $($lockfile.Line.Trim())"
           pnpm install --frozen-lockfile
           exit $LASTEXITCODE
       - name: Build baseline installer
@@ -95,7 +109,8 @@ jobs:
           exit $LASTEXITCODE
       - name: Free baseline build intermediates
         run: |
-          # The custom build runs from its own checkout, so the baseline only keeps its installer.
+          # Only intermediates are released here: the built installer beside win-unpacked and the audit
+          # report under the runner temp still serve the acceptance and release jobs.
           $build = Join-Path $env:GITHUB_WORKSPACE 'baseline/apps/desktop/.desktop-build/targets/win-x64'
           foreach ($name in @('dsh', 'dsh-pnpm', 'electron', 'installer-ui', 'packed', 'runtime', 'unsigned-artifacts/win-unpacked')) {
             $path = Join-Path $build $name
@@ -103,6 +118,13 @@ jobs:
           }
           $nodeModules = Join-Path $env:GITHUB_WORKSPACE 'baseline/node_modules'
           if (Test-Path -LiteralPath $nodeModules) { Remove-Item -LiteralPath $nodeModules -Recurse -Force }
+      - name: Guard free disk space after the baseline cleanup
+        run: |
+          # The custom install and its full build still have to fit; print what remains and fail closed.
+          $guard = Join-Path $env:GITHUB_WORKSPACE 'custom/apps/desktop/scripts/assert-custom-core-disk-space.ps1'
+          if (-not (Test-Path -LiteralPath $guard -PathType Leaf)) { throw "custom core disk: the guard is missing at $guard" }
+          & $guard -Stage 'after the baseline cleanup' -Path $env:GITHUB_WORKSPACE, $env:RUNNER_TEMP
+          exit $LASTEXITCODE
       - name: Build custom installer
         working-directory: custom
         run: |

@@ -8,7 +8,7 @@ import { afterEach, expect, it } from 'vitest'
 import { DESKTOP_HOST_PROTOCOL_VERSION } from '../src/host-protocol.ts'
 import { writeDesktopRuntime } from '../src/runtime-tree.ts'
 import { CUSTOM_CORE_DIRECTORY, CUSTOM_CORE_TARBALL } from '../scripts/replace-windows-custom-core.ts'
-import { verifyControlledCore, verifyCustomCorePackage } from '../scripts/verify-custom-core-package.ts'
+import { verifyControlledCore, verifyCustomCorePackage, type CustomCorePackageAuditSummary } from '../scripts/verify-custom-core-package.ts'
 import { writePackage } from './runtime-fixture.ts'
 
 const require = createRequire(import.meta.url)
@@ -330,16 +330,25 @@ it('rejects an application archive that bundles the tool registry', async () => 
     .toThrow(/forbidden package dsh-tool-registry at app\.asar\/dsh\/node_modules\/dsh-tool-registry\/index\.js/u)
 })
 
-it('rejects a runtime package the package set does not declare', async () => {
-  const built = await fixture({ extraArchive: { 'dsh/node_modules/@deepseek-ai/dsh-business-plugin/index.js': 'export {}\n' } })
-  await expect(audit(built)).rejects.toThrow(
-    'undeclared package @deepseek-ai/dsh-business-plugin at app.asar/dsh/node_modules/@deepseek-ai/dsh-business-plugin/index.js')
+it('accepts registry dependencies the package set does not declare', async () => {
+  // The package set covers the dsh family only; a registry dependency of the installed closure is bound by
+  // the prepared runtime instead of the package set, exactly as the real Windows build records it.
+  const built = await fixture({
+    runtimeExtra: {
+      'node_modules/@deepseek-ai/libreoffice-kit/package.json': '{"name":"@deepseek-ai/libreoffice-kit","version":"1.0.0"}\n',
+      'node_modules/@deepseek-ai/libreoffice-kit-win32-x64/package.json':
+        '{"name":"@deepseek-ai/libreoffice-kit-win32-x64","version":"1.0.0"}\n',
+    },
+  })
+  const summary = await audit(built) as CustomCorePackageAuditSummary
+  expect(summary.customCore).toBe(CUSTOM)
+  expect(summary.sharedPackages).toContain(`${TOOLS}@${CUSTOM}`)
 })
 
-it('rejects a business plugin the prepared manifest records', async () => {
-  const built = await fixture({ runtimeExtra: { 'node_modules/@deepseek-ai/dsh-business-plugin/index.js': 'export {}\n' } })
+it('rejects an archive package the prepared runtime does not record', async () => {
+  const built = await fixture({ extraArchive: { 'dsh/node_modules/@deepseek-ai/dsh-business-plugin/index.js': 'export {}\n' } })
   await expect(audit(built)).rejects.toThrow(
-    'undeclared package @deepseek-ai/dsh-business-plugin at app.asar/dsh/node_modules/@deepseek-ai/dsh-business-plugin/index.js')
+    'unrecorded runtime entry dsh/node_modules/@deepseek-ai/dsh-business-plugin/index.js')
 })
 
 it('rejects an application archive entry the prepared manifest does not record', async () => {
@@ -373,7 +382,7 @@ it('lists every archive violation in one failure', async () => {
   expect(message).toMatch(/^custom core package: 4 violations in .*app\.asar:/u)
   expect(message).toContain('forbidden package dsh-tool-registry at app.asar/dsh/node_modules/dsh-tool-registry/index.js')
   expect(message).toContain(
-    'undeclared package @deepseek-ai/dsh-business-plugin at app.asar/dsh/node_modules/@deepseek-ai/dsh-business-plugin/index.js')
+    'unrecorded runtime entry dsh/node_modules/@deepseek-ai/dsh-business-plugin/index.js')
   expect(message).toContain(`controlled core tarball at app.asar/dsh/${CUSTOM_CORE_TARBALL}`)
   expect(message).toContain('update configuration at resources/app-update.yml')
 })
