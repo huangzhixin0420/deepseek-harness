@@ -1,7 +1,7 @@
 /** Static acceptance for the Windows custom-core build, installation acceptance, and prerelease pipeline. */
 import { spawnSync } from 'node:child_process'
 import {
-  copyFileSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, symlinkSync, writeFileSync,
+  copyFileSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync,
 } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join, resolve } from 'node:path'
@@ -246,7 +246,7 @@ it('isolates the fixture from the product package', () => {
   expect(readFileSync(WORKFLOW_PATH, 'utf8')).not.toContain('apps/desktop/scripts/fixtures')
 })
 
-it.each([false, true])('registers its inherited tool on the Host plane without any agent preset (catalog absent: %s)', (catalogAbsent) => {
+it.each([false, true])('creates a real Agent through the Loader before observing tools (catalog absent: %s)', (catalogAbsent) => {
   const root = mkdtempSync(join(tmpdir(), 'custom-core-host-fixture-'))
   const reportPath = join(root, 'observation.json')
   const afterPath = join(root, 'after.json')
@@ -255,16 +255,12 @@ it.each([false, true])('registers its inherited tool on the Host plane without a
   const sessionRoot = join(root, 'sessions')
   try {
     copyFileSync(FIXTURE_ENTRY, fixtureEntry)
-    const scopeNamespace = join(root, 'node_modules', '@deepseek-ai')
-    mkdirSync(scopeNamespace, { recursive: true })
-    symlinkSync(
-      join(REPOSITORY, 'packages', 'core', 'scope'), join(scopeNamespace, 'dsh-scope'),
-      process.platform === 'win32' ? 'junction' : 'dir',
-    )
     const moduleUrl = (path: string) => pathToFileURL(join(REPOSITORY, path)).href
     writeFileSync(runnerPath, `
 import { existsSync, writeFileSync } from 'node:fs'
 import { Context } from ${JSON.stringify(moduleUrl('vendor/cordis/lib/index.js'))}
+import Loader from ${JSON.stringify(moduleUrl('vendor/loader/lib/index.js'))}
+import Include from ${JSON.stringify(moduleUrl('vendor/include/lib/index.js'))}
 import LlmRuntime from ${JSON.stringify(moduleUrl('packages/llm/llm/lib/index.js'))}
 import SessionStore from ${JSON.stringify(moduleUrl('packages/core/session/lib/index.js'))}
 import SessionProjectionRegistry from ${JSON.stringify(moduleUrl('packages/session/session-projection/lib/index.js'))}
@@ -275,27 +271,75 @@ import AgentRegistry from ${JSON.stringify(moduleUrl('packages/core/agent/lib/in
 import * as JsonlSessionPersistence from ${JSON.stringify(moduleUrl('packages/session/session-persistence-jsonl/lib/index.js'))}
 import AgentLoop from ${JSON.stringify(moduleUrl('packages/core/agent-loop/lib/index.js'))}
 import * as SessionCheckpointPolicy from ${JSON.stringify(moduleUrl('packages/session/session-checkpoint-policy/lib/index.js'))}
+import * as fixture from ${JSON.stringify(pathToFileURL(fixtureEntry).href)}
 const reportPath = ${JSON.stringify(reportPath)}
 const afterPath = ${JSON.stringify(afterPath)}
+const configPath = ${JSON.stringify(join(root, 'cordis.yml'))}
 const ctx = new Context()
-await ctx.plugin(LlmRuntime)
-await ctx.plugin(SessionStore)
-await ctx.plugin(SessionProjectionRegistry)
-await ctx.plugin(SystemPrompt)
-await ctx.plugin(ToolRuntime)
-await ctx.plugin(NativeToolExecutor)
-await ctx.plugin(AgentRegistry)
-await ctx.plugin(JsonlSessionPersistence, { root: ${JSON.stringify(sessionRoot)} })
-await ctx.plugin(AgentLoop, { agents: [] })
-await ctx.plugin(SessionCheckpointPolicy)
+ctx.baseUrl = ${JSON.stringify(pathToFileURL(root).href + '/')}
+await ctx.plugin(Loader)
+ctx.loader.builtins.include = Include
+const modules = new Map([
+  ['@deepseek-ai/dsh-llm', LlmRuntime],
+  ['@deepseek-ai/dsh-session', SessionStore],
+  ['@deepseek-ai/dsh-session-projection', SessionProjectionRegistry],
+  ['@deepseek-ai/dsh-system-prompt', SystemPrompt],
+  ['@deepseek-ai/dsh-tools', ToolRuntime],
+  ['@deepseek-ai/dsh-tool-executor-native', NativeToolExecutor],
+  ['@deepseek-ai/dsh-agent', AgentRegistry],
+  ['@deepseek-ai/dsh-session-persistence-jsonl', JsonlSessionPersistence],
+  ['@deepseek-ai/dsh-agent-loop', AgentLoop],
+  ['@deepseek-ai/dsh-session-checkpoint-policy', SessionCheckpointPolicy],
+  ['./index.mjs', fixture],
+])
+ctx.loader.internal = {
+  version: 'v2',
+  async import(specifier) {
+    if (!modules.has(specifier)) throw new Error('unexpected Loader import: ' + specifier)
+    return modules.get(specifier)
+  },
+}
+writeFileSync(configPath, [
+  "- name: '@deepseek-ai/dsh-llm'",
+  "- name: '@deepseek-ai/dsh-session'",
+  "- name: '@deepseek-ai/dsh-session-projection'",
+  "- name: '@deepseek-ai/dsh-system-prompt'",
+  "- name: '@deepseek-ai/dsh-tools'",
+  "- name: '@deepseek-ai/dsh-tool-executor-native'",
+  "- name: '@deepseek-ai/dsh-agent'",
+  "- name: '@deepseek-ai/dsh-session-persistence-jsonl'",
+  '  config:',
+  '    root: ' + JSON.stringify(${JSON.stringify(sessionRoot)}),
+  "- name: '@deepseek-ai/dsh-agent-loop'",
+  '  config:',
+  '    agents: []',
+  "- name: '@deepseek-ai/dsh-session-checkpoint-policy'",
+  "- name: './index.mjs'",
+  '',
+].join('\\n'))
+await ctx.loader.create({
+  name: 'cordis:include',
+  config: { path: ${JSON.stringify(pathToFileURL(join(root, 'cordis.yml')).href)} },
+})
+await ctx.loader.await()
 if (${JSON.stringify(catalogAbsent)}) ctx.tools.catalog = undefined
-const fixture = await import(${JSON.stringify(pathToFileURL(fixtureEntry).href)})
-await ctx.plugin(Object.assign(fixture.apply, { inject: ['tools'] }))
 const deadline = Date.now() + 5000
 while (!existsSync(reportPath) && Date.now() < deadline) {
   await new Promise(resolve => setTimeout(resolve, 25))
 }
-if (!existsSync(reportPath)) throw new Error('the fixture did not produce its Host-plane report')
+if (!existsSync(reportPath)) {
+  const entries = [...ctx.loader.entries()].map(entry => ({
+    name: entry.options.name,
+    disabled: entry.disabled,
+    state: entry.fiber?.state,
+    imported: entry.moduleNamespace !== undefined,
+  }))
+  throw new Error('the fixture did not produce its Host-plane report: ' + JSON.stringify(entries))
+}
+const pending = [...ctx.loader.entries()]
+  .filter(entry => entry.fiber === undefined && !entry.disabled)
+  .map(entry => entry.options.name)
+if (pending.length > 0) throw new Error('Loader entries did not start: ' + pending.join(', '))
 writeFileSync(afterPath, JSON.stringify([
   ctx.tools.get('fixture_unified_inherited_tool'),
   ctx.tools.get('fixture_unified_own_tool'),
