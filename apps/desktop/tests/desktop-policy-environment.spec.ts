@@ -47,14 +47,12 @@ it('rejects login origins in production', () => {
     .toThrow('must not configure allowedAuthOrigins')
 })
 
-it.each([{ unsigned: true }, { prepareOnly: true }, {}])('requires policy outside local macOS builds in %j', (options) => {
+it.each([{ unsigned: true }, { prepareOnly: true }, {}])('requires policy outside unsigned builds in %j', (options) => {
   for (const platform of ['win32', 'darwin'] as const) {
-    if (platform === 'darwin' && options.unsigned) {
-      expect(() => { validateDesktopPackageEnvironment({ DSH_DESKTOP_APP_ID: 'com.example.test' }, { platform, arch: 'x64' }, options) })
-        .not.toThrow()
-      continue
+    const validate = (): void => {
+      validateDesktopPackageEnvironment({ DSH_DESKTOP_APP_ID: 'com.example.test' }, { platform, arch: 'x64' }, options)
     }
-    expect(() => { validateDesktopPackageEnvironment({ DSH_DESKTOP_APP_ID: 'com.example.test' }, { platform, arch: 'x64' }, options) })
-      .toThrow('DSH_DESKTOP_MANDATORY_UPDATE_TEST_ORIGIN')
+    if (options.unsigned) expect(validate).not.toThrow()
+    else expect(validate).toThrow('DSH_DESKTOP_MANDATORY_UPDATE_TEST_ORIGIN')
   }
 })

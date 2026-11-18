@@ -154,6 +154,7 @@ describe('desktop macOS release signature', () => {
       win: { forceCodeSigning: false, signtoolOptions: { sign: undefined } },
       publish: null,
     })
+    expect(config.extraMetadata).not.toHaveProperty('dshMandatoryUpdatePolicy')
   })
 
   it.each(['arm64', 'x64'])('builds local macOS %s DMGs without release credentials or update metadata', async (arch) => {

@@ -2,7 +2,7 @@ import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { describe, expect, it } from 'vitest'
-import { loadDesktopPackageEnvironment, localMacOSPackageEnvironment, validateDesktopPackageEnvironment } from '../scripts/desktop-package-environment.mjs'
+import { loadDesktopPackageEnvironment, localMacOSPackageEnvironment, localWindowsPackageEnvironment, validateDesktopPackageEnvironment } from '../scripts/desktop-package-environment.mjs'
 import { resolveWindowsPackageSettings } from '../scripts/windows-package-settings.mjs'
 
 const WINDOWS = { platform: 'win32', arch: 'x64' } as const
@@ -119,6 +119,30 @@ describe('Desktop local packaging configuration', () => {
     expect(() => { validateDesktopPackageEnvironment(local, MACOS, { unsigned: true }) }).not.toThrow()
     expect(parent.DSH_DESKTOP_UNSIGNED).toBe('0')
     expect(parent.DSH_DESKTOP_APP_ID).toBe('com.example.release')
+  })
+
+  it('selects Windows local defaults without a Windows file or inherited release settings', async () => {
+    await withDirectory(async (directory) => {
+      const parent = {
+        PATH: 'build-tools', HTTPS_PROXY: 'http://proxy.example:8080', DSH_DESKTOP_NPM_REGISTRY: 'https://registry.npmmirror.com',
+        DSH_DESKTOP_APP_ID: 'com.example.release', DSH_DESKTOP_UNSIGNED: '0',
+        DSH_DESKTOP_AUTO_UPDATE_ENV: 'production', DSH_DESKTOP_MANDATORY_UPDATE_CONFIG: 'invalid-json',
+        DSH_DESKTOP_WINDOWS_CER_FILE: 'missing.cer', DSH_DESKTOP_WINDOWS_TOKEN_PIN: 'unused-pin',
+        DSH_DESKTOP_WINDOWS_PACK_CONCURRENCY: '8',
+        DOWNLOAD_PROD_ORIGIN: 'https://updates.example.com', DOWNLOAD_PROD_COS_SECRET_KEY: 'unused-secret',
+      }
+      expect(() => loadDesktopPackageEnvironment('win32', parent, directory)).toThrow(/copy .*\.env\.windows\.example/u)
+      const local = localWindowsPackageEnvironment(parent)
+      expect(local).toEqual({
+        PATH: parent.PATH, HTTPS_PROXY: parent.HTTPS_PROXY, DSH_DESKTOP_NPM_REGISTRY: parent.DSH_DESKTOP_NPM_REGISTRY,
+        DSH_DESKTOP_APP_ID: 'com.deepseek.dsh', DSH_DESKTOP_UNSIGNED: '1',
+      })
+      expect(resolveWindowsPackageSettings(local)).toEqual({ signatureCacheConcurrency: 4, packConcurrency: 4, compressionLevel: 3 })
+      expect(() => { validateDesktopPackageEnvironment(local, WINDOWS, { unsigned: true }) }).not.toThrow()
+      expect(parent.DSH_DESKTOP_UNSIGNED).toBe('0')
+      expect(parent.DSH_DESKTOP_APP_ID).toBe('com.example.release')
+      expect(parent.DSH_DESKTOP_MANDATORY_UPDATE_CONFIG).toBe('invalid-json')
+    })
   })
 
   it('takes cache concurrency from the Windows file and defaults to four without ambient overrides', async () => {
