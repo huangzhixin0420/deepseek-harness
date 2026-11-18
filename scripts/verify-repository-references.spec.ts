@@ -285,3 +285,59 @@ describe('maintained repository reference policy', () => {
       .toEqual([{ file: '.agents/notes/implemented/process/current.md', line: 1, kind: 'organization-url' }])
   })
 })
+
+describe('pinned baseline commits', () => {
+  const customCoreWorkflow = readFileSync(
+    join(import.meta.dirname, '..', '.github/workflows/desktop-custom-core-windows.yml'), 'utf8')
+  function pinned(name: string): string {
+    const value = new RegExp(`^\\s*${name}: ([0-9a-f]{40})$`, 'mu').exec(customCoreWorkflow)?.[1]
+    if (value === undefined) throw new Error(`the custom-core workflow must pin ${name}`)
+    return value
+  }
+  const official = pinned('BASELINE_OFFICIAL_COMMIT')
+  const packaging = pinned('BASELINE_PACKAGING_COMMIT')
+  const unrelated = 'a1b2c3d4e5f60718293a4b5c6d7e8f9012345678'
+  const baselineFiles = [
+    '.github/workflows/desktop-custom-core-windows.yml',
+    'apps/desktop/scripts/prepare-custom-core-baseline.mjs',
+    'apps/desktop/tests/prepare-custom-core-baseline.spec.ts',
+    'docs/superpowers/plans/2026-11-18-custom-windows-desktop-core.md',
+    'scripts/verify-repository-references.ts',
+  ]
+
+  it.each(baselineFiles)('accepts the official baseline commit the custom-core files pin in %s', (file) => {
+    expect(findRepositoryReferences(file, `pin ${official}`, new Set([official]))).toEqual([])
+  })
+
+  it('accepts the packaging patch commit in the workflow that names it', () => {
+    expect(findRepositoryReferences(baselineFiles[0]!, `pin ${packaging}`, new Set([packaging]))).toEqual([])
+  })
+
+  it.each([
+    ['docs/technical-design.md', official],
+    ['apps/desktop/scripts/other-helper.mjs', official],
+    [baselineFiles[1]!, packaging],
+    [baselineFiles[3]!, packaging],
+    [baselineFiles[4]!, unrelated],
+    [baselineFiles[0]!, unrelated],
+  ])('rejects %s: %s outside the exact pinned files and values', (file, commit) => {
+    expect(findRepositoryReferences(file, `pin ${commit}`, new Set([commit]))).toEqual([
+      { file, line: 1, kind: 'commit-hash' },
+    ])
+  })
+
+  it('rejects another commit beside a pinned value on the same line', () => {
+    expect(findRepositoryReferences(baselineFiles[0]!, `${official} ${unrelated}`, new Set([official, unrelated])))
+      .toEqual([{ file: baselineFiles[0]!, line: 1, kind: 'commit-hash' }])
+  })
+
+  it('rejects abbreviated and case-varied forms of a pinned value', () => {
+    expect(findRepositoryReferences(baselineFiles[1]!, official.slice(0, 12), new Set([official.slice(0, 12)])))
+      .toEqual([{ file: baselineFiles[1]!, line: 1, kind: 'commit-hash' }])
+  })
+
+  it('keeps the organization URL rule unchanged in an exempted file', () => {
+    expect(findRepositoryReferences(baselineFiles[4]!, `${organizationUrl}/project`, new Set()))
+      .toEqual([{ file: baselineFiles[4]!, line: 1, kind: 'organization-url' }])
+  })
+})

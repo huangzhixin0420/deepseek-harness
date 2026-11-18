@@ -74,4 +74,4 @@ Hunt these in any doc; [dsh-doc-writing](../.agents/skills/dsh-doc-writing/SKILL
 
 ## Repository references
 
-Use relative Markdown links for current files and tags or PR numbers for historical references. `verify-md-links` checks local targets. [Reference validation](../scripts/verify-repository-references.ts) rejects commit identifiers containing a hexadecimal letter and disallowed organization URLs in maintained files. Decimal-only tokens are ignored to avoid collisions with numeric data, even when they identify commits.
+Use relative Markdown links for current files and tags or PR numbers for historical references. `verify-md-links` checks local targets. [Reference validation](../scripts/verify-repository-references.ts) rejects commit identifiers containing a hexadecimal letter and disallowed organization URLs in maintained files; a file that must pin an exact build commit declares it in that gate's pinned-reference table. Decimal-only tokens are ignored to avoid collisions with numeric data, even when they identify commits.

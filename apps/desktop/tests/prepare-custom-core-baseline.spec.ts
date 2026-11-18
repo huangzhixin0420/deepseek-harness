@@ -254,7 +254,7 @@ it('rejects an official commit that does not match the requested one', () => {
   })
 })
 
-it.each(['main', '89E1904D55E7F4B9560595ADFECD48A088D88BC', '89e1904d'])('rejects the packaging commit %s', (value) => {
+it.each(['main', 'ABCDEF0123456789ABCDEF0123456789ABCDEF01', '0123abcd'])('rejects the packaging commit %s', (value) => {
   withRepository((repository) => {
     repository.packaging()
     const result = cli(repository.root, '--source', repository.root, '--packaging-commit', value)

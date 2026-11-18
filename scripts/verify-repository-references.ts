@@ -18,6 +18,54 @@ const gitOutputLimit = 64 * 1024 * 1024
 // One 41-byte line per object; 1.2 million objects produce about 49 MiB.
 const objectListingLimit = 1024 * 1024 * 1024
 
+/** One commit identifier a maintained file must pin. */
+interface PinnedCommitReference {
+  /** Repository-relative file that has to carry the identifier. */
+  readonly file: string
+  /** Exact lowercase identifiers the file may pin; abbreviated or case-varied forms stay prohibited. */
+  readonly commits: readonly string[]
+}
+
+// A release tag cannot express these pins: the Windows custom-core build has to fail when the
+// checked-out official commit or the packaging patch commit moves.
+const pinnedCommitReferences: readonly PinnedCommitReference[] = [
+  // The workflow checks out the official baseline commit and names the packaging patch commit.
+  {
+    file: '.github/workflows/desktop-custom-core-windows.yml',
+    commits: ['38a6a5c965aa99ab525161efb7cc5cf1fe62fced', '89e1904d55e7f4b9560595addfecd48a088d88bc'],
+  },
+  // Baseline preparation refuses any checkout that is not the official release commit.
+  {
+    file: 'apps/desktop/scripts/prepare-custom-core-baseline.mjs',
+    commits: ['38a6a5c965aa99ab525161efb7cc5cf1fe62fced'],
+  },
+  // The baseline test asserts the pinned commit the command line enforces.
+  {
+    file: 'apps/desktop/tests/prepare-custom-core-baseline.spec.ts',
+    commits: ['38a6a5c965aa99ab525161efb7cc5cf1fe62fced'],
+  },
+  // The delivery plan states the official commit baseline preparation must verify.
+  {
+    file: 'docs/superpowers/plans/2026-11-18-custom-windows-desktop-core.md',
+    commits: ['38a6a5c965aa99ab525161efb7cc5cf1fe62fced'],
+  },
+  // This file is the definition site of the exemptions.
+  {
+    file: 'scripts/verify-repository-references.ts',
+    commits: ['38a6a5c965aa99ab525161efb7cc5cf1fe62fced', '89e1904d55e7f4b9560595addfecd48a088d88bc'],
+  },
+]
+
+/**
+ * Check whether a reference is one this file has to carry.
+ * @param file - Repository-relative path.
+ * @param commit - Lowercase commit identifier found in the file.
+ * @returns True when the file pins exactly this identifier.
+ */
+function isPinnedCommit(file: string, commit: string): boolean {
+  return pinnedCommitReferences.some(entry => entry.file === file && entry.commits.includes(commit))
+}
+
 /** One prohibited reference in a maintained source file. */
 export interface RepositoryReference {
   /** Repository-relative path, with forward slashes. */
@@ -37,7 +85,7 @@ function isMaintained(file: string): boolean {
  * @param file - Repository-relative path used in diagnostics and exclusions.
  * @param source - File text or a symlink's stored target.
  * @param commits - Lowercase, unambiguous full or abbreviated commit identifiers.
- * @returns One finding per line and reference kind; digests and other Git object types are accepted.
+ * @returns One finding per line and reference kind; digests, other Git object types, and the pinned commits declared above are accepted.
  * Decimal-only tokens are ignored, including actual commit identifiers.
  */
 export function findRepositoryReferences(
@@ -51,7 +99,8 @@ export function findRepositoryReferences(
     if (organizationUrl.test(canonicalReferenceText(line).replace(kitRepositoryUrl, ''))) {
       references.push({ file, line: index + 1, kind: 'organization-url' })
     }
-    if ([...line.matchAll(commitCandidate)].some(match => commits.has(match[0].toLowerCase()))) {
+    if ([...line.matchAll(commitCandidate)]
+      .some(match => commits.has(match[0].toLowerCase()) && !isPinnedCommit(file, match[0].toLowerCase()))) {
       references.push({ file, line: index + 1, kind: 'commit-hash' })
     }
   }
