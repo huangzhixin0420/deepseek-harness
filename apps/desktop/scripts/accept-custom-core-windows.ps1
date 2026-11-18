@@ -43,7 +43,7 @@ $productName = 'DeepSeek Harness'
 $fixturePackageName = 'dsh-fixture-unified-own-tool'
 $fixtureRowId = 'fixture-unified-own-tool'
 $ownTool = 'fixture_unified_own_tool'
-$inheritedTool = 'bash'
+$inheritedTool = 'pwsh'
 $unknownToolCode = 'UNKNOWN_TOOL'
 $ownToolReply = 'fixture-own-tool-ran'
 

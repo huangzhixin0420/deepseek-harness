@@ -234,7 +234,7 @@ it('isolates the fixture from the product package', () => {
   expect(manifest).toMatchObject({ name: 'dsh-fixture-unified-own-tool', private: true })
   const entry = readFileSync(FIXTURE_ENTRY, 'utf8')
   expect(entry).toContain('fixture_unified_own_tool')
-  expect(entry).toContain("const INHERITED_TOOL = 'bash'")
+  expect(entry).toContain("const INHERITED_TOOL = 'pwsh'")
   expect(entry).toContain('includeOwn: true')
   expect(entry).toContain('allow: [INHERITED_TOOL]')
   expect(entry).toContain('createScope')
@@ -242,6 +242,31 @@ it('isolates the fixture from the product package', () => {
   const builder = readFileSync(join(APP_ROOT, 'scripts', 'electron-builder-config.mjs'), 'utf8')
   expect(builder).not.toContain('unified-own-tool-plugin')
   expect(readFileSync(WORKFLOW_PATH, 'utf8')).not.toContain('apps/desktop/scripts/fixtures')
+})
+
+it('names an inherited tool that the official Windows profile enables', async () => {
+  const { parseEntryYaml } = await import('@deepseek-ai/cordis-plugin-include')
+  const { evaluate } = await import('@deepseek-ai/cordis-plugin-loader')
+  const parsed = parseEntryYaml(readFileSync(join(REPOSITORY, 'packages', 'bundle', 'base', 'cordis.patch.yml'), 'utf8'))
+  if (!Array.isArray(parsed)) throw new TypeError('base patch must parse to a patch list')
+  const rows = parsed.flatMap(patch =>
+    typeof patch === 'object' && patch !== null
+      ? (patch as { insert?: Record<string, unknown>[] }).insert ?? []
+      : [],
+  )
+  const enabled = ['tool-bash', 'tool-pwsh'].filter((id) => {
+    const row = rows.find(candidate => candidate.id === id)
+    const expression = (row?.disabled as { __jsExpr?: string } | undefined)?.__jsExpr
+    if (expression === undefined) throw new Error(`${id} must gate on a !!js disabled expression`)
+    return !evaluate({ process: { platform: 'win32' } }, expression)
+  }).map(id => id.slice('tool-'.length))
+  expect(enabled).toEqual(['pwsh'])
+
+  const entry = readFileSync(FIXTURE_ENTRY, 'utf8')
+  const inherited = /const INHERITED_TOOL = '([^']+)'/u.exec(entry)?.[1]
+  expect(enabled).toContain(inherited)
+  const acceptance = readFileSync(ACCEPTANCE_SCRIPT, 'utf8')
+  expect(acceptance).toContain(`$inheritedTool = '${inherited}'`)
 })
 
 /** Position of one named package-job step. */
