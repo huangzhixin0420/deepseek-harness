@@ -25,6 +25,7 @@ import { suggestDesktopBuildVersion } from './desktop-build-version-discovery.ts
 import { desktopBuildCommitEnvironment, readDesktopBuildCommit, resolveDesktopBuildCommit } from './desktop-build-commit.mjs'
 import { requireDesktopToolchain } from './desktop-toolchain-preflight.ts'
 import { withMacOSNotarizationProxy } from './macos-notarization-proxy.ts'
+import { CUSTOM_CORE_DIRECTORY, CUSTOM_CORE_TARBALL, replaceWindowsCustomCore } from './replace-windows-custom-core.ts'
 
 const APP_ROOT = resolve(import.meta.dirname, '..')
 const REPOSITORY_ROOT = resolve(APP_ROOT, '..', '..')
@@ -511,6 +512,14 @@ export async function packageTarget(
       '--pack-destination',
       buildPaths.packedLandlock,
     ], buildEnv, REPOSITORY_ROOT)
+    if (invocation.unsigned && target.platform === 'win32') {
+      const customCore = join(APP_ROOT, 'resources', CUSTOM_CORE_DIRECTORY)
+      replaceWindowsCustomCore({
+        packedDsh: buildPaths.packedDsh,
+        sourceTarball: join(customCore, CUSTOM_CORE_TARBALL),
+        checksumFile: join(customCore, `${CUSTOM_CORE_TARBALL}.sha256`),
+      })
+    }
   }
   const prepareRuntime = () => executePreparation(
     ['run', 'prepare:runtime', ...(signPrimaryRuntime ? ['--defer-primary-runtime-smoke'] : [])], downloadEnv)
