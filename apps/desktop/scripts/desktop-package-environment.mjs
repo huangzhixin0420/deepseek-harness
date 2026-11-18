@@ -21,16 +21,26 @@ const MACOS_SETTING = /^(?:DSH_DESKTOP_MACOS_(?:SIGNING_IDENTITY|TEAM_ID|SIGNATU
 const AMBIENT_RELEASE_SETTING = /^(?:DSH_DESKTOP_(?:APP_ID|AUTO_UPDATE_ENV|MANDATORY_UPDATE_.*|WINDOWS_.*|MACOS_.*)|APPLE_.*|(?:WIN_)?CSC_.*|DOWNLOAD_(?:TEST|PROD)_.*)$/iu
 
 /**
+ * Build an unsigned local environment with the application identifier that platform needs.
+ * @param {NodeJS.ProcessEnv} environment Parent environment, retained for build tools and networking.
+ * @param {string} appId Application identifier the platform must keep.
+ * @returns {NodeJS.ProcessEnv} Unsigned build environment without release settings.
+ */
+function localPackageEnvironment(environment, appId) {
+  return {
+    ...Object.fromEntries(Object.entries(environment).filter(([name]) => !AMBIENT_RELEASE_SETTING.test(name))),
+    DSH_DESKTOP_APP_ID: appId,
+    DSH_DESKTOP_UNSIGNED: '1',
+  }
+}
+
+/**
  * Select local macOS test defaults without reading dotenv files or inheriting release settings.
  * @param {NodeJS.ProcessEnv} environment Parent environment, retained for build tools and networking.
  * @returns {NodeJS.ProcessEnv} Unsigned build environment with the standard application identifier and no update policy.
  */
 export function localMacOSPackageEnvironment(environment = process.env) {
-  return {
-    ...Object.fromEntries(Object.entries(environment).filter(([name]) => !AMBIENT_RELEASE_SETTING.test(name))),
-    DSH_DESKTOP_APP_ID: 'com.deepseek.harness',
-    DSH_DESKTOP_UNSIGNED: '1',
-  }
+  return localPackageEnvironment(environment, 'com.deepseek.harness')
 }
 
 /**
@@ -40,11 +50,7 @@ export function localMacOSPackageEnvironment(environment = process.env) {
  * @returns {NodeJS.ProcessEnv} Unsigned build environment with the official application identifier and no update policy.
  */
 export function localWindowsPackageEnvironment(environment = process.env) {
-  return {
-    ...Object.fromEntries(Object.entries(environment).filter(([name]) => !AMBIENT_RELEASE_SETTING.test(name))),
-    DSH_DESKTOP_APP_ID: 'com.deepseek.dsh',
-    DSH_DESKTOP_UNSIGNED: '1',
-  }
+  return localPackageEnvironment(environment, 'com.deepseek.dsh')
 }
 
 /**

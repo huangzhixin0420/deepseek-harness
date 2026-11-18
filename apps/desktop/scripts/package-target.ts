@@ -344,8 +344,9 @@ async function main(): Promise<void> {
   if (invocation.skipNotarization) {
     process.stdout.write('desktop package: skipping notarization and stapling; internal debugging only, not qualified for distribution or update publishing\n')
   }
+  const localEnvironment = target.platform === 'darwin' ? localMacOSPackageEnvironment : localWindowsPackageEnvironment
   const environment = invocation.unsigned
-    ? target.platform === 'darwin' ? localMacOSPackageEnvironment() : localWindowsPackageEnvironment()
+    ? localEnvironment()
     : loadDesktopPackageEnvironment(target.platform, process.env, APP_ROOT, {
       unsigned: invocation.unsigned, prepareOnly: invocation.prepareOnly,
     })
