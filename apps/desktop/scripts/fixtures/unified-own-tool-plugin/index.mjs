@@ -18,7 +18,7 @@ import { dirname } from 'node:path'
 /** Tool the fixture registers inside its own scope. */
 const OWN_TOOL = 'fixture_unified_own_tool'
 /** Inherited tool named by the allow-list: never this scope's own registration. */
-const INHERITED_TOOL = 'bash'
+const INHERITED_TOOL = 'pwsh'
 const OWN_TOOL_REPLY = 'fixture-own-tool-ran'
 const TOOL_WAIT_MILLISECONDS = 120_000
 const POLL_MILLISECONDS = 100
