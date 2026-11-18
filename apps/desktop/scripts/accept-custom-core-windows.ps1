@@ -80,6 +80,7 @@ $state = [ordered]@{
     fixture = [ordered]@{ directory = $null; files = @(); fixtureSha256 = $null; ownTool = $ownTool; inheritedTool = $inheritedTool }
     installs = [ordered]@{ baselineArguments = ''; baselineExitCode = $null; customArguments = ''; customExitCode = $null }
     observation = [ordered]@{ baseline = $null; custom = $null }
+    session = [ordered]@{ id = $null; seeded = $false; reopened = $false }
     data = [ordered]@{ before = @(); after = @(); identical = $false; differences = @(); profileBundles = $null }
     checks = @()
     errors = @()
@@ -299,7 +300,8 @@ function Write-CredentialsPlaceholder {
 
 function Write-DesktopPreference {
     New-Item -ItemType Directory -Path $desktopJsonDir -Force | Out-Null
-    $settings = [ordered]@{ updates = [ordered]@{ channel = 'nightly' } }
+    # `nightly` is the packaged and coordinator default, so only `stable` proves a non-default value.
+    $settings = [ordered]@{ updates = [ordered]@{ channel = 'stable' } }
     $settings | ConvertTo-Json -Depth 4 | Set-Content -LiteralPath $desktopSettingsFile -Encoding utf8
 }
 
@@ -363,9 +365,9 @@ try {
     Add-Check 'no pre-existing application instance' ($running.Count -eq 0) "found $($running.Count) instance(s) this script does not own"
     if ($running.Count -ne 0) { throw "custom core acceptance: $productName is already running; this script only terminates processes it started" }
 
-    $baselineArguments = "/S /D=$installDir"
-    $state.installs.baselineArguments = $baselineArguments
-    $state.installs.baselineExitCode = Install-Product -Installer $BaselineInstaller -Arguments $baselineArguments -Label 'baseline'
+    $installArguments = "/S /D=$installDir"
+    $state.installs.baselineArguments = $installArguments
+    $state.installs.baselineExitCode = Install-Product -Installer $BaselineInstaller -Arguments $installArguments -Label 'baseline'
     Add-Check 'baseline installer exits 0' ($state.installs.baselineExitCode -eq 0) "exit code $($state.installs.baselineExitCode)"
     Add-Check 'baseline application installed' (Test-Path -LiteralPath $application -PathType Leaf) $application
 
@@ -399,6 +401,8 @@ try {
     $baselineSessionError = Get-JsonField $baselineSession 'error'
     $sessionSeeded = ($null -ne $baselineSession) -and ((Get-JsonField $baselineSession 'mode' '') -eq 'seed') -and ($null -eq $baselineSessionError)
     Add-Check 'baseline created a real Session' $sessionSeeded "session: $($baselineSession | ConvertTo-Json -Compress -Depth 6)"
+    $state.session.id = [string](Get-JsonField $baselineSession 'id' '')
+    $state.session.seeded = $sessionSeeded
     if (-not $baselineApp.HasExited) {
         Add-Check 'baseline Host stayed healthy through the observation' $true "pid $($baselineApp.Id) alive after reporting"
     } else {
@@ -412,9 +416,9 @@ try {
     $seededSessionFiles = @($state.data.before | Where-Object { $_.path -like '.dsh/sessions/*' -and $_.exists })
     Add-Check 'seeded Session is durable' ($seededSessionFiles.Count -gt 0) "$($seededSessionFiles.Count) session file(s) under .dsh/sessions"
 
-    $customArguments = "/S --updated /D=$installDir"
-    $state.installs.customArguments = $customArguments
-    $state.installs.customExitCode = Install-Product -Installer $CustomInstaller -Arguments $customArguments -Label 'custom overwrite'
+    # Same silent form as the baseline: the same per-user identity into the same directory.
+    $state.installs.customArguments = $installArguments
+    $state.installs.customExitCode = Install-Product -Installer $CustomInstaller -Arguments $installArguments -Label 'custom overwrite'
     Add-Check 'custom installer exits 0' ($state.installs.customExitCode -eq 0) "exit code $($state.installs.customExitCode)"
     Add-Check 'custom installer overwrote the same directory' (Test-Path -LiteralPath $application -PathType Leaf) $application
     $uninstallKeys = @(Get-ItemProperty -Path "HKCU:\Software\Microsoft\Windows\CurrentVersion\Uninstall\*" -ErrorAction SilentlyContinue |
@@ -445,6 +449,7 @@ try {
         -and ($null -eq $customSessionError) `
         -and ((Get-JsonField $customSession 'id' '') -eq (Get-JsonField $baselineSession 'id' ''))
     Add-Check 'custom Host reopened the seeded Session' $sessionReopened "session: $($customSession | ConvertTo-Json -Compress -Depth 6)"
+    $state.session.reopened = $sessionReopened
     if (-not $customApp.HasExited) {
         Add-Check 'custom Host stayed healthy through the observation' $true "pid $($customApp.Id) alive after reporting"
     } else {
