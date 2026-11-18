@@ -1,14 +1,21 @@
 import { execFileSync, spawnSync } from 'node:child_process'
+import { createHash } from 'node:crypto'
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { dirname, join } from 'node:path'
 import { expect, it } from 'vitest'
+import type { PrepareCustomCoreBaselineRecord } from '../scripts/prepare-custom-core-baseline.mjs'
+import { prepareCustomCoreBaseline } from '../scripts/prepare-custom-core-baseline.mjs'
 
 const APP_ROOT = join(import.meta.dirname, '..')
+const REPOSITORY_ROOT = join(APP_ROOT, '..', '..')
 const SCRIPT = join(APP_ROOT, 'scripts', 'prepare-custom-core-baseline.mjs')
 const PINNED_COMMIT = '38a6a5c965aa99ab525161efb7cc5cf1fe62fced'
+const PINNED_MODULE = '4fc37321febd4979b732a2832af4eb832602b30185e51584c1ddc0b0cb3db29a'
 const PUBLISHER_IMPORT = '@deepseek-ai/dsh-desktop-publisher/desktop-auto-update-environment.mjs'
 const LOCAL_IMPORT = './desktop-auto-update-environment.mjs'
+const PUBLISHER_MODULE_FILE = 'apps/desktop-publisher/src/desktop-auto-update-environment.mjs'
+const LOCAL_MODULE_FILE = 'apps/desktop/scripts/desktop-auto-update-environment.mjs'
 const PACKAGE_ENVIRONMENT = 'apps/desktop/scripts/desktop-package-environment.mjs'
 const BUILDER_CONFIG = 'apps/desktop/scripts/electron-builder-config.mjs'
 const PACKAGE_TARGET = 'apps/desktop/scripts/package-target.ts'
@@ -16,17 +23,12 @@ const PACKAGING_FILES = [PACKAGE_ENVIRONMENT, BUILDER_CONFIG, PACKAGE_TARGET]
 const CORE_SOURCE = 'packages/core/src/index.ts'
 const PACKAGING_HELPER = 'apps/desktop/scripts/custom-core-helper.ts'
 
+const RELOCATED_MODULE = readFileSync(join(REPOSITORY_ROOT, PUBLISHER_MODULE_FILE), 'utf8')
+
 const OFFICIAL_TREE: Readonly<Record<string, string>> = {
   [CORE_SOURCE]: "export const CORE = 'official'\n",
   'package.json': '{"name":"fixture","version":"0.2.2-rc.3"}\n',
-  'apps/desktop/scripts/desktop-auto-update-environment.mjs': `export function desktopBuildRecordFilename() {
-  return 'desktop-build.json'
-}
-
-export function resolveDesktopAutoUpdateConfig() {
-  return undefined
-}
-`,
+  [LOCAL_MODULE_FILE]: RELOCATED_MODULE,
   [PACKAGE_ENVIRONMENT]: `import { resolveDesktopAutoUpdateConfig } from '${LOCAL_IMPORT}'
 
 export function loadDesktopPackageEnvironment(platform, environment) {
@@ -58,6 +60,7 @@ export async function main() {
 const PACKAGING_TREE: Readonly<Record<string, string>> = {
   [CORE_SOURCE]: "export const CORE = 'unified'\n",
   [PACKAGING_HELPER]: "export const CUSTOM_CORE = 'controlled tarball'\n",
+  [PUBLISHER_MODULE_FILE]: RELOCATED_MODULE,
   [PACKAGE_ENVIRONMENT]: `import { resolveDesktopAutoUpdateConfig } from '${PUBLISHER_IMPORT}'
 
 export function localWindowsPackageEnvironment(environment = process.env) {
@@ -112,9 +115,12 @@ interface Prepared {
   readonly stderr: string
 }
 
-function preparedContent(path: string, changes: Readonly<Record<string, string | null>> = {}): string {
-  const source = changes[path] === undefined ? PACKAGING_TREE[path]! : changes[path]!
-  return source.replaceAll(`'${PUBLISHER_IMPORT}'`, `'${LOCAL_IMPORT}'`)
+function digest(content: string): string {
+  return createHash('sha256').update(content).digest('hex')
+}
+
+function preparedContent(path: string): string {
+  return PACKAGING_TREE[path]!.replaceAll(`'${PUBLISHER_IMPORT}'`, `'${LOCAL_IMPORT}'`)
 }
 
 function writeTree(root: string, tree: Readonly<Record<string, string | null>>): void {
@@ -129,7 +135,7 @@ function writeTree(root: string, tree: Readonly<Record<string, string | null>>):
   }
 }
 
-function withRepository(action: (repository: Repository) => void): void {
+function withRepository(action: (repository: Repository) => void, relocatedModule = RELOCATED_MODULE): void {
   const root = mkdtempSync(join(tmpdir(), 'custom-core-baseline-'))
   try {
     const git = (...args: string[]): string => execFileSync('git', [
@@ -138,13 +144,13 @@ function withRepository(action: (repository: Repository) => void): void {
     ], { cwd: root, env: ENVIRONMENT, encoding: 'utf8', stdio: 'pipe' }).trim()
     git('init', '--initial-branch=main')
     git('config', 'core.autocrlf', 'false')
-    writeTree(root, OFFICIAL_TREE)
+    writeTree(root, { ...OFFICIAL_TREE, [LOCAL_MODULE_FILE]: relocatedModule })
     git('add', '.')
     git('commit', '-m', 'official source')
     const official = git('rev-parse', 'HEAD')
     const packaging = (changes: Readonly<Record<string, string | null>> = {}): string => {
       git('checkout', '-B', 'packaging', official)
-      writeTree(root, { ...PACKAGING_TREE, ...changes })
+      writeTree(root, { ...PACKAGING_TREE, [PUBLISHER_MODULE_FILE]: relocatedModule, ...changes })
       git('add', '-A')
       git('commit', '-m', 'packaging patch')
       const commit = git('rev-parse', 'HEAD')
@@ -158,29 +164,26 @@ function withRepository(action: (repository: Repository) => void): void {
   }
 }
 
-function prepare(root: string, ...args: string[]): Prepared {
+function prepareFixture(repository: Repository, packagingCommit: string, source = repository.root): PrepareCustomCoreBaselineRecord {
+  return prepareCustomCoreBaseline({ source, packagingCommit, officialCommit: repository.official })
+}
+
+function cli(root: string, ...args: string[]): Prepared {
   const run = spawnSync(process.execPath, [SCRIPT, ...args], { cwd: root, env: ENVIRONMENT, encoding: 'utf8', timeout: 120_000 })
   expect(run.error).toBeUndefined()
   return { status: run.status, stdout: run.stdout, stderr: run.stderr }
 }
 
-function prepareFixture(repository: Repository, packaging: string, ...args: string[]): Prepared {
-  return prepare(repository.root, '--source', repository.root, '--packaging-commit', packaging,
-    '--official-commit', repository.official, ...args)
-}
-
 it('copies only the three packaging scripts onto the official checkout', () => {
   withRepository((repository) => {
     const packaging = repository.packaging()
-    const result = prepareFixture(repository, packaging)
-    expect(result.stderr).toBe('')
-    expect(result.status).toBe(0)
-    expect(JSON.parse(result.stdout)).toEqual({
-      officialCommit: repository.official,
-      packagingCommit: packaging,
-      changedFiles: PACKAGING_FILES,
-      importRewrites: Object.fromEntries(PACKAGING_FILES.map(path => [path, 1])),
-    })
+    expect(prepareCustomCoreBaseline({ source: repository.root, packagingCommit: packaging, officialCommit: repository.official }))
+      .toEqual({
+        officialCommit: repository.official,
+        packagingCommit: packaging,
+        changedFiles: PACKAGING_FILES,
+        importRewrites: Object.fromEntries(PACKAGING_FILES.map(path => [path, 1])),
+      })
     for (const path of PACKAGING_FILES) expect(readFileSync(join(repository.root, path), 'utf8')).toBe(preparedContent(path))
     expect(readFileSync(join(repository.root, CORE_SOURCE), 'utf8')).toBe(OFFICIAL_TREE[CORE_SOURCE])
     expect(existsSync(join(repository.root, PACKAGING_HELPER))).toBe(false)
@@ -189,10 +192,41 @@ it('copies only the three packaging scripts onto the official checkout', () => {
   })
 })
 
+it('rejects a publisher module whose bytes differ from the official module', () => {
+  withRepository((repository) => {
+    const packaging = repository.packaging({ [PUBLISHER_MODULE_FILE]: `${RELOCATED_MODULE}\nexport const drifted = true\n` })
+    expect(() => prepareFixture(repository, packaging)).toThrow(
+      `custom core baseline: ${PUBLISHER_MODULE_FILE} sha256 is ${digest(`${RELOCATED_MODULE}\nexport const drifted = true\n`)};`
+      + ` ${LOCAL_MODULE_FILE} sha256 is ${PINNED_MODULE}; the import revert requires the same module bytes`,
+    )
+    for (const path of PACKAGING_FILES) expect(readFileSync(join(repository.root, path), 'utf8')).toBe(OFFICIAL_TREE[path])
+  })
+})
+
+it('rejects a publisher module that is not the pinned relocation', () => {
+  const replacement = 'export const resolveDesktopAutoUpdateConfig = () => undefined\n'
+  withRepository((repository) => {
+    const packaging = repository.packaging()
+    expect(() => prepareFixture(repository, packaging)).toThrow(
+      `custom core baseline: ${LOCAL_MODULE_FILE} sha256 is ${digest(replacement)}; expected ${PINNED_MODULE}`,
+    )
+    for (const path of PACKAGING_FILES) expect(readFileSync(join(repository.root, path), 'utf8')).toBe(OFFICIAL_TREE[path])
+  }, replacement)
+})
+
+it('rejects a packaging commit that does not carry the publisher module', () => {
+  withRepository((repository) => {
+    const packaging = repository.packaging({ [PUBLISHER_MODULE_FILE]: null })
+    expect(() => prepareFixture(repository, packaging)).toThrow(
+      `custom core baseline: ${PUBLISHER_MODULE_FILE} is not present in packaging commit ${packaging}`,
+    )
+  })
+})
+
 it('rejects an official checkout that is not the pinned release commit', () => {
   withRepository((repository) => {
     const packaging = repository.packaging()
-    const result = prepare(repository.root, '--source', repository.root, '--packaging-commit', packaging)
+    const result = cli(repository.root, '--source', repository.root, '--packaging-commit', packaging)
     expect(result.status).toBe(1)
     expect(result.stderr).toContain(`official source commit is ${repository.official}`)
     expect(result.stderr).toContain(`expected ${PINNED_COMMIT}`)
@@ -200,21 +234,29 @@ it('rejects an official checkout that is not the pinned release commit', () => {
   })
 })
 
+it('rejects a removed official commit override on the command line', () => {
+  withRepository((repository) => {
+    const packaging = repository.packaging()
+    const result = cli(repository.root, '--source', repository.root, '--packaging-commit', packaging,
+      '--official-commit', repository.official)
+    expect(result.status).toBe(1)
+    expect(result.stderr).toContain('--official-commit')
+  })
+})
+
 it('rejects an official commit that does not match the requested one', () => {
   withRepository((repository) => {
     const packaging = repository.packaging()
-    const result = prepare(repository.root, '--source', repository.root, '--packaging-commit', packaging,
-      '--official-commit', 'e'.repeat(40))
-    expect(result.status).toBe(1)
-    expect(result.stderr).toContain(`official source commit is ${repository.official}`)
-    expect(result.stderr).toContain(`expected ${'e'.repeat(40)}`)
+    expect(() => prepareCustomCoreBaseline({ source: repository.root, packagingCommit: packaging, officialCommit: 'e'.repeat(40) }))
+      .toThrow(`custom core baseline: official source commit is ${repository.official}; expected ${'e'.repeat(40)};`
+        + ' check out the official release first')
   })
 })
 
 it.each(['main', '89E1904D55E7F4B9560595ADFECD48A088D88BC', '89e1904d'])('rejects the packaging commit %s', (value) => {
   withRepository((repository) => {
     repository.packaging()
-    const result = prepareFixture(repository, value)
+    const result = cli(repository.root, '--source', repository.root, '--packaging-commit', value)
     expect(result.status).toBe(1)
     expect(result.stderr).toContain('40-character lowercase hexadecimal')
   })
@@ -223,18 +265,15 @@ it.each(['main', '89E1904D55E7F4B9560595ADFECD48A088D88BC', '89e1904d'])('reject
 it('rejects a packaging commit the checkout does not contain', () => {
   withRepository((repository) => {
     const missing = 'a'.repeat(40)
-    const result = prepareFixture(repository, missing)
-    expect(result.status).toBe(1)
-    expect(result.stderr).toContain(missing)
-    expect(result.stderr).toContain(repository.root)
+    expect(() => prepareFixture(repository, missing)).toThrow(`custom core baseline: packaging commit ${missing} is not available in ${repository.root}`)
   })
 })
 
 it('rejects the official commit as its own packaging commit', () => {
   withRepository((repository) => {
-    const result = prepareFixture(repository, repository.official)
-    expect(result.status).toBe(1)
-    expect(result.stderr).toContain('is the official source commit')
+    expect(() => prepareFixture(repository, repository.official)).toThrow(
+      `custom core baseline: packaging commit ${repository.official} is the official source commit`,
+    )
   })
 })
 
@@ -242,10 +281,9 @@ it('rejects a dirty official checkout without writing anything', () => {
   withRepository((repository) => {
     const packaging = repository.packaging()
     writeFileSync(join(repository.root, CORE_SOURCE), "export const CORE = 'edited'\n")
-    const result = prepareFixture(repository, packaging)
-    expect(result.status).toBe(1)
-    expect(result.stderr).toContain('uncommitted changes')
-    expect(result.stderr).toContain(CORE_SOURCE)
+    expect(() => prepareFixture(repository, packaging)).toThrow(
+      `custom core baseline: ${repository.root} has uncommitted changes; clean it before preparing the baseline:`,
+    )
     for (const path of PACKAGING_FILES) expect(readFileSync(join(repository.root, path), 'utf8')).toBe(OFFICIAL_TREE[path])
   })
 })
@@ -254,20 +292,16 @@ it('rejects an untracked file in the official checkout', () => {
   withRepository((repository) => {
     const packaging = repository.packaging()
     writeFileSync(join(repository.root, PACKAGING_HELPER), 'export const leftover = true\n')
-    const result = prepareFixture(repository, packaging)
-    expect(result.status).toBe(1)
-    expect(result.stderr).toContain('uncommitted changes')
-    expect(result.stderr).toContain(PACKAGING_HELPER)
+    expect(() => prepareFixture(repository, packaging)).toThrow('has uncommitted changes;')
   })
 })
 
 it('rejects a packaging commit that does not carry one of the scripts', () => {
   withRepository((repository) => {
     const packaging = repository.packaging({ [BUILDER_CONFIG]: null })
-    const result = prepareFixture(repository, packaging)
-    expect(result.status).toBe(1)
-    expect(result.stderr).toContain(BUILDER_CONFIG)
-    expect(result.stderr).toContain(packaging)
+    expect(() => prepareFixture(repository, packaging)).toThrow(
+      `custom core baseline: ${BUILDER_CONFIG} is not present in packaging commit ${packaging}`,
+    )
   })
 })
 
@@ -276,10 +310,9 @@ it('rejects repeated publisher imports instead of guessing which one to revert',
     const repeated = PACKAGING_TREE[PACKAGE_TARGET]!.replace('import { localWindowsPackageEnvironment }',
       `import { desktopBuildRecordFilename as recordName } from '${PUBLISHER_IMPORT}'\nimport { localWindowsPackageEnvironment }`)
     const packaging = repository.packaging({ [PACKAGE_TARGET]: repeated })
-    const result = prepareFixture(repository, packaging)
-    expect(result.status).toBe(1)
-    expect(result.stderr).toContain(PACKAGE_TARGET)
-    expect(result.stderr).toContain('2')
+    expect(() => prepareFixture(repository, packaging)).toThrow(
+      `custom core baseline: ${PACKAGE_TARGET} imports ${PUBLISHER_IMPORT} 2 times; expected at most one revertable import`,
+    )
     expect(readFileSync(join(repository.root, PACKAGE_TARGET), 'utf8')).toBe(OFFICIAL_TREE[PACKAGE_TARGET])
   })
 })
@@ -288,20 +321,18 @@ it('rejects a relative import the official source tree does not provide', () => 
   withRepository((repository) => {
     const broken = `${PACKAGING_TREE[BUILDER_CONFIG]!}import { missing } from './missing-helper.mjs'\n`
     const packaging = repository.packaging({ [BUILDER_CONFIG]: broken })
-    const result = prepareFixture(repository, packaging)
-    expect(result.status).toBe(1)
-    expect(result.stderr).toContain('./missing-helper.mjs')
-    expect(result.stderr).toContain(BUILDER_CONFIG)
+    expect(() => prepareFixture(repository, packaging)).toThrow(
+      `custom core baseline: ${BUILDER_CONFIG} imports ./missing-helper.mjs, which the official source tree does not provide`,
+    )
   })
 })
 
 it('rejects a source directory below the work tree root', () => {
   withRepository((repository) => {
     const packaging = repository.packaging()
-    const result = prepare(join(repository.root, 'apps', 'desktop'), '--source', join(repository.root, 'apps', 'desktop'),
-      '--packaging-commit', packaging, '--official-commit', repository.official)
-    expect(result.status).toBe(1)
-    expect(result.stderr).toContain(repository.root)
+    expect(() => prepareFixture(repository, packaging, join(repository.root, 'apps', 'desktop'))).toThrow(
+      `${join(repository.root, 'apps', 'desktop')} is not the work tree root`,
+    )
   })
 })
 
@@ -310,10 +341,9 @@ it('rejects a source directory outside a git work tree', () => {
     const packaging = repository.packaging()
     const outside = mkdtempSync(join(tmpdir(), 'custom-core-plain-'))
     try {
-      const result = prepare(outside, '--source', outside, '--packaging-commit', packaging,
-        '--official-commit', repository.official)
-      expect(result.status).toBe(1)
-      expect(result.stderr).toContain(outside)
+      expect(() => prepareFixture(repository, packaging, outside)).toThrow(
+        `custom core baseline: ${outside} is not a git work tree`,
+      )
     } finally {
       rmSync(outside, { recursive: true, force: true })
     }
@@ -324,9 +354,9 @@ it.each(['--source', '--packaging-commit'])('requires %s', (option) => {
   withRepository((repository) => {
     const packaging = repository.packaging()
     const args = option === '--source'
-      ? ['--packaging-commit', packaging, '--official-commit', repository.official]
-      : ['--source', repository.root, '--official-commit', repository.official]
-    const result = prepare(repository.root, ...args)
+      ? ['--packaging-commit', packaging]
+      : ['--source', repository.root]
+    const result = cli(repository.root, ...args)
     expect(result.status).toBe(1)
     expect(result.stderr).toContain(`${option} is required`)
   })
