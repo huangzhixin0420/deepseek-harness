@@ -17,9 +17,10 @@ const LOCAL_IMPORT = './desktop-auto-update-environment.mjs'
 const PUBLISHER_MODULE_FILE = 'apps/desktop-publisher/src/desktop-auto-update-environment.mjs'
 const LOCAL_MODULE_FILE = 'apps/desktop/scripts/desktop-auto-update-environment.mjs'
 const PACKAGE_ENVIRONMENT = 'apps/desktop/scripts/desktop-package-environment.mjs'
+const PACKAGE_ENVIRONMENT_DECLARATION = 'apps/desktop/scripts/desktop-package-environment.d.mts'
 const BUILDER_CONFIG = 'apps/desktop/scripts/electron-builder-config.mjs'
 const PACKAGE_TARGET = 'apps/desktop/scripts/package-target.ts'
-const PACKAGING_FILES = [PACKAGE_ENVIRONMENT, BUILDER_CONFIG, PACKAGE_TARGET]
+const PACKAGING_FILES = [PACKAGE_ENVIRONMENT, PACKAGE_ENVIRONMENT_DECLARATION, BUILDER_CONFIG, PACKAGE_TARGET]
 const CORE_SOURCE = 'packages/core/src/index.ts'
 const PACKAGING_HELPER = 'apps/desktop/scripts/custom-core-helper.ts'
 
@@ -40,6 +41,8 @@ export function validateDesktopPackageEnvironment(environment, target, options =
   if (target.platform !== 'darwin' || !options.unsigned) return requirePolicy(environment)
   return environment
 }
+`,
+  [PACKAGE_ENVIRONMENT_DECLARATION]: `export function localMacOSPackageEnvironment(environment?: NodeJS.ProcessEnv): NodeJS.ProcessEnv
 `,
   [BUILDER_CONFIG]: `import { resolveDesktopAutoUpdateConfig } from '${LOCAL_IMPORT}'
 
@@ -71,6 +74,9 @@ export function validateDesktopPackageEnvironment(environment, target, options =
   if (!options.unsigned) return requirePolicy(environment)
   return environment
 }
+`,
+  [PACKAGE_ENVIRONMENT_DECLARATION]: `export function localMacOSPackageEnvironment(environment?: NodeJS.ProcessEnv): NodeJS.ProcessEnv
+export function localWindowsPackageEnvironment(environment?: NodeJS.ProcessEnv): NodeJS.ProcessEnv
 `,
   [BUILDER_CONFIG]: `import { resolveDesktopAutoUpdateConfig } from '${PUBLISHER_IMPORT}'
 
@@ -174,7 +180,7 @@ function cli(root: string, ...args: string[]): Prepared {
   return { status: run.status, stdout: run.stdout, stderr: run.stderr }
 }
 
-it('copies only the three packaging scripts onto the official checkout', () => {
+it('copies only the four packaging files onto the official checkout', () => {
   withRepository((repository) => {
     const packaging = repository.packaging()
     expect(prepareCustomCoreBaseline({ source: repository.root, packagingCommit: packaging, officialCommit: repository.official }))
@@ -182,12 +188,12 @@ it('copies only the three packaging scripts onto the official checkout', () => {
         officialCommit: repository.official,
         packagingCommit: packaging,
         changedFiles: PACKAGING_FILES,
-        importRewrites: Object.fromEntries(PACKAGING_FILES.map(path => [path, 1])),
+        importRewrites: Object.fromEntries(PACKAGING_FILES.map(path => [path, path === PACKAGE_ENVIRONMENT_DECLARATION ? 0 : 1])),
       })
     for (const path of PACKAGING_FILES) expect(readFileSync(join(repository.root, path), 'utf8')).toBe(preparedContent(path))
     expect(readFileSync(join(repository.root, CORE_SOURCE), 'utf8')).toBe(OFFICIAL_TREE[CORE_SOURCE])
     expect(existsSync(join(repository.root, PACKAGING_HELPER))).toBe(false)
-    expect(repository.git('diff', '--name-only').split('\n')).toEqual(PACKAGING_FILES)
+    expect(repository.git('diff', '--name-only').split('\n')).toEqual([...PACKAGING_FILES].sort())
     expect(repository.git('ls-files', '--others', '--exclude-standard')).toBe('')
   })
 })

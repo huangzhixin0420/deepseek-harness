@@ -8,7 +8,7 @@ export const BASELINE_PACKAGING_FILES: readonly string[]
 export interface PrepareCustomCoreBaselineOptions {
   /** Official checkout directory; it must be the work tree root at the official commit. */
   readonly source: string
-  /** Packaging patch commit that carries the three packaging scripts. */
+  /** Packaging patch commit that carries the four packaging files. */
   readonly packagingCommit: string
   /** Official commit the checkout must be at; defaults to the pinned release commit. */
   readonly officialCommit?: string
