@@ -281,6 +281,9 @@ jobs:
             throw "custom core release: the acceptance report accepted $($report.installers.custom.sha256), not this installer"
           }
           if (-not $report.data.identical) { throw 'custom core release: the acceptance report did not preserve the seeded configuration hashes' }
+          if (-not $report.session.reopened) {
+            throw 'custom core release: the acceptance report did not reopen the seeded Session on the custom installation'
+          }
 
           $notes = Join-Path $root 'release-notes.md'
           $lines = @(
@@ -295,7 +298,8 @@ jobs:
             "- 覆盖安装后配置哈希一致：$($report.data.identical)",
             "- 基线 own 工具可见且可执行：$($report.observation.baseline.execution.text)",
             "- 定制 own 工具不可见且调用被拒绝：$($report.observation.custom.execution.code)",
-            "- 会话在覆盖安装后重新打开：$($report.observation.custom.session.mode)",
+            "- 基线会话 id：``$($report.session.id)``",
+            "- 定制安装重新打开同一会话：$($report.session.reopened)",
             '',
             '内置 core 行为只在覆盖安装验收通过的这一份安装包上生效。'
           )

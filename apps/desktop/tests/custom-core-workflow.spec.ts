@@ -191,6 +191,39 @@ it('ships an acceptance script with the documented parameters and report fields'
   expect(script).toContain('exit 1')
 })
 
+it('seeds a non-default desktop preference that the hash snapshot still covers', () => {
+  const script = readFileSync(ACCEPTANCE_SCRIPT, 'utf8')
+  // `nightly` is the packaged channel and the coordinator default, so it cannot prove anything was set.
+  expect(script).toContain("channel = 'stable'")
+  expect(script).not.toContain("channel = 'nightly'")
+  expect(script).toContain("Get-ChildItem -Force -LiteralPath $desktopJsonDir -Filter '*.json'")
+  expect(script).toContain("desktopSettingsFile = Join-Path $desktopJsonDir 'settings.json'")
+  expect(script.indexOf("Write-Output '== seeding the isolated configuration'"))
+    .toBeLessThan(script.indexOf("Write-Output '== snapshot A"))
+})
+
+it('installs both packages with the same verified silent form', () => {
+  const script = readFileSync(ACCEPTANCE_SCRIPT, 'utf8')
+  expect(script).toContain('$installArguments = "/S /D=$installDir"')
+  expect(script).not.toContain('--updated')
+  expect(script.match(/-Arguments \$installArguments/gu) ?? []).toHaveLength(2)
+  expect(script).toContain('$state.installs.customArguments = $installArguments')
+})
+
+it('prints acceptance-proven Session evidence in the release body', () => {
+  const acceptance = readFileSync(ACCEPTANCE_SCRIPT, 'utf8')
+  expect(acceptance).toContain('session = [ordered]@{ id = $null; seeded = $false; reopened = $false }')
+  expect(acceptance).toContain('$state.session.id = [string](Get-JsonField $baselineSession')
+  expect(acceptance).toContain('$state.session.seeded = $sessionSeeded')
+  expect(acceptance).toContain('$state.session.reopened = $sessionReopened')
+
+  const script = jobScript(releaseJob)
+  expect(script).toContain('if (-not $report.session.reopened)')
+  expect(script).toContain('$report.session.id')
+  expect(script).toContain('$report.session.reopened')
+  expect(script).not.toContain('.session.mode')
+})
+
 it('isolates the fixture from the product package', () => {
   const manifest = JSON.parse(readFileSync(FIXTURE_MANIFEST, 'utf8')) as { name?: string; private?: boolean }
   expect(manifest).toMatchObject({ name: 'dsh-fixture-unified-own-tool', private: true })
