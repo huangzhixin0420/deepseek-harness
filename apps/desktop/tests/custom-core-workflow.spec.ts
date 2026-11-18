@@ -240,19 +240,19 @@ it('isolates the fixture from the product package', () => {
   expect(entry).toContain("const INHERITED_TOOL = 'fixture_unified_inherited_tool'")
   expect(entry).toContain('includeOwn: true')
   expect(entry).toContain('allow: [INHERITED_TOOL]')
-  expect(entry).toContain('createScope')
 
   const builder = readFileSync(join(APP_ROOT, 'scripts', 'electron-builder-config.mjs'), 'utf8')
   expect(builder).not.toContain('unified-own-tool-plugin')
   expect(readFileSync(WORKFLOW_PATH, 'utf8')).not.toContain('apps/desktop/scripts/fixtures')
 })
 
-it('registers its inherited tool on the Host plane without any agent preset', () => {
+it.each([false, true])('registers its inherited tool on the Host plane without any agent preset (catalog absent: %s)', (catalogAbsent) => {
   const root = mkdtempSync(join(tmpdir(), 'custom-core-host-fixture-'))
   const reportPath = join(root, 'observation.json')
   const afterPath = join(root, 'after.json')
   const runnerPath = join(root, 'runner.mjs')
   const fixtureEntry = join(root, 'index.mjs')
+  const sessionRoot = join(root, 'sessions')
   try {
     copyFileSync(FIXTURE_ENTRY, fixtureEntry)
     const scopeNamespace = join(root, 'node_modules', '@deepseek-ai')
@@ -265,15 +265,30 @@ it('registers its inherited tool on the Host plane without any agent preset', ()
     writeFileSync(runnerPath, `
 import { existsSync, writeFileSync } from 'node:fs'
 import { Context } from ${JSON.stringify(moduleUrl('vendor/cordis/lib/index.js'))}
+import LlmRuntime from ${JSON.stringify(moduleUrl('packages/llm/llm/lib/index.js'))}
+import SessionStore from ${JSON.stringify(moduleUrl('packages/core/session/lib/index.js'))}
+import SessionProjectionRegistry from ${JSON.stringify(moduleUrl('packages/session/session-projection/lib/index.js'))}
 import SystemPrompt from ${JSON.stringify(moduleUrl('packages/core/system-prompt/lib/index.js'))}
 import ToolRuntime from ${JSON.stringify(moduleUrl('packages/core/tools/lib/index.js'))}
 import * as NativeToolExecutor from ${JSON.stringify(moduleUrl('packages/core/tool-executor-native/lib/index.js'))}
+import AgentRegistry from ${JSON.stringify(moduleUrl('packages/core/agent/lib/index.js'))}
+import * as JsonlSessionPersistence from ${JSON.stringify(moduleUrl('packages/session/session-persistence-jsonl/lib/index.js'))}
+import AgentLoop from ${JSON.stringify(moduleUrl('packages/core/agent-loop/lib/index.js'))}
+import * as SessionCheckpointPolicy from ${JSON.stringify(moduleUrl('packages/session/session-checkpoint-policy/lib/index.js'))}
 const reportPath = ${JSON.stringify(reportPath)}
 const afterPath = ${JSON.stringify(afterPath)}
 const ctx = new Context()
-await ctx.plugin(SystemPrompt, {})
+await ctx.plugin(LlmRuntime)
+await ctx.plugin(SessionStore)
+await ctx.plugin(SessionProjectionRegistry)
+await ctx.plugin(SystemPrompt)
 await ctx.plugin(ToolRuntime)
 await ctx.plugin(NativeToolExecutor)
+await ctx.plugin(AgentRegistry)
+await ctx.plugin(JsonlSessionPersistence, { root: ${JSON.stringify(sessionRoot)} })
+await ctx.plugin(AgentLoop, { agents: [] })
+await ctx.plugin(SessionCheckpointPolicy)
+if (${JSON.stringify(catalogAbsent)}) ctx.tools.catalog = undefined
 const fixture = await import(${JSON.stringify(pathToFileURL(fixtureEntry).href)})
 await ctx.plugin(Object.assign(fixture.apply, { inject: ['tools'] }))
 const deadline = Date.now() + 5000
@@ -281,7 +296,11 @@ while (!existsSync(reportPath) && Date.now() < deadline) {
   await new Promise(resolve => setTimeout(resolve, 25))
 }
 if (!existsSync(reportPath)) throw new Error('the fixture did not produce its Host-plane report')
-writeFileSync(afterPath, JSON.stringify(ctx.tools.catalog()))
+writeFileSync(afterPath, JSON.stringify([
+  ctx.tools.get('fixture_unified_inherited_tool'),
+  ctx.tools.get('fixture_unified_own_tool'),
+].filter(tool => tool !== undefined).map(tool => tool.name)))
+await ctx.fiber.dispose()
 `)
     const run = spawnSync(process.execPath, [runnerPath], {
       encoding: 'utf8',
@@ -289,7 +308,7 @@ writeFileSync(afterPath, JSON.stringify(ctx.tools.catalog()))
       env: {
         ...process.env,
         DSH_FIXTURE_OWN_TOOL_REPORT: reportPath,
-        DSH_FIXTURE_OWN_TOOL_MODE: 'observe',
+        DSH_FIXTURE_OWN_TOOL_MODE: 'seed',
         DSH_FIXTURE_OWN_TOOL_SESSION: '',
       },
     })
@@ -306,6 +325,7 @@ writeFileSync(afterPath, JSON.stringify(ctx.tools.catalog()))
       projectionListsOwnTool: boolean
       restrictAccepted: boolean
       execution: { isError: boolean; code: string | null }
+      session: { mode: string; id: string; error?: string }
       error: string | null
     }
     expect(observation).toMatchObject({
@@ -315,8 +335,11 @@ writeFileSync(afterPath, JSON.stringify(ctx.tools.catalog()))
       projectionListsOwnTool: false,
       restrictAccepted: true,
       execution: { isError: true, code: 'UNKNOWN_TOOL' },
+      session: { mode: 'seed' },
       error: null,
     })
+    expect(observation.session.id).not.toBe('')
+    expect(observation.session.error).toBeUndefined()
     expect(observation.catalog).toEqual(['fixture_unified_inherited_tool', 'fixture_unified_own_tool'])
     expect(observation.projection).toEqual(['fixture_unified_inherited_tool'])
     expect(JSON.parse(readFileSync(afterPath, 'utf8'))).toEqual([])

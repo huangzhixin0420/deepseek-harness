@@ -67,17 +67,15 @@ async function executeOwnTool(ctx, key) {
   }
 }
 
-/** Create the session the baseline must produce, or resume it on the overwritten installation. */
-async function touchSession(ctx, options) {
-  // The agents service is the core's own session boundary; absent in compositions that expose none.
+/** Create or resume the real Agent whose scope and Session this installation must support. */
+async function openAgent(ctx, options) {
   const agents = ctx.get('agents')
-  if (agents === undefined) return { mode: options.mode, id: options.sessionId, error: 'the composition exposes no agents service' }
+  if (agents === undefined) throw new Error('the composition exposes no agents service')
   const sessionId = options.mode === 'seed' && options.sessionId === '' ? randomUUID() : options.sessionId
   const handle = options.mode === 'seed'
     ? await agents.create({ sessionId, meta: { cwd: process.cwd() } })
     : await agents.resume({ resumeSessionId: sessionId })
-  await handle.dispose()
-  return { mode: options.mode, id: sessionId }
+  return { handle, session: { mode: options.mode, id: sessionId } }
 }
 
 /** Write the observation so the acceptance script never reads a half-written file. */
@@ -107,7 +105,7 @@ async function observe(ctx, options) {
     error: null,
   }
   let liftRestriction
-  let scope
+  let handle
   let disposeInherited
   try {
     disposeInherited = ctx.tools.register({
@@ -122,11 +120,11 @@ async function observe(ctx, options) {
     })
     report.inheritedToolPresent = ctx.tools.get(INHERITED_TOOL) !== undefined
     if (!report.inheritedToolPresent) throw new Error(`the fixture could not register the inherited tool "${INHERITED_TOOL}"`)
-    // Resolved through the installation's profile resolution; a failure is reported, not swallowed by the loader.
-    const { createScope } = await import('@deepseek-ai/dsh-scope')
-    const key = { id: 'fixture-unified-own-tool' }
-    scope = createScope(ctx, key)
-    scope.ctx.tools.register({
+    const opened = await openAgent(ctx, options)
+    handle = opened.handle
+    report.session = opened.session
+    const key = handle.agent
+    handle.agent.ctx.tools.register({
       name: OWN_TOOL,
       description: 'Acceptance fixture tool registered inside one agent-like scope.',
       parameters: { type: 'object', properties: {} },
@@ -136,23 +134,21 @@ async function observe(ctx, options) {
       },
       execute: () => Promise.resolve(OWN_TOOL_REPLY),
     })
-    liftRestriction = scope.ctx.tools.restrict({ allow: [INHERITED_TOOL], includeOwn: true })
+    const unmasked = ctx.tools.schemas(key).map(tool => tool.name).sort()
+    liftRestriction = handle.agent.ctx.tools.restrict({ allow: [INHERITED_TOOL], includeOwn: true })
     report.restrictAccepted = true
-    report.catalog = ctx.tools.catalog(key).map(tool => tool.name).sort()
+    report.catalog = typeof ctx.tools.catalog === 'function'
+      ? ctx.tools.catalog(key).map(tool => tool.name).sort()
+      : unmasked
     report.projection = ctx.tools.schemas(key).map(tool => tool.name).sort()
     report.registered = report.catalog.includes(OWN_TOOL)
     report.projectionListsOwnTool = report.projection.includes(OWN_TOOL)
     report.execution = await executeOwnTool(ctx, key)
-    try {
-      report.session = await touchSession(ctx, options)
-    } catch (error) {
-      report.session = { mode: options.mode, error: String(error) }
-    }
   } catch (error) {
     report.error = String(error)
   } finally {
     if (liftRestriction !== undefined) liftRestriction()
-    if (scope !== undefined) await scope.dispose()
+    if (handle !== undefined) await handle.dispose()
     if (disposeInherited !== undefined) disposeInherited()
   }
   writeReport(options.report, report)
