@@ -68,8 +68,13 @@ jobs:
       - name: Configure the shared package cache
         run: |
           $cache = Join-Path $env:RUNNER_TEMP 'dsh-desktop-package-cache'
+          $store = Join-Path $env:RUNNER_TEMP 'pnpm-store'
           New-Item -ItemType Directory -Path $cache -Force | Out-Null
+          New-Item -ItemType Directory -Path $store -Force | Out-Null
           "DSH_DESKTOP_PACKAGE_CACHE_DIR=$cache" >> $env:GITHUB_ENV
+          # Both checkouts install into one workspace store, so the second install resolves from the first.
+          "PNPM_STORE_DIR=$store" >> $env:GITHUB_ENV
+          "npm_config_store_dir=$store" >> $env:GITHUB_ENV
       - name: Prepare baseline packaging scripts
         working-directory: custom
         run: |
@@ -101,6 +106,8 @@ jobs:
             $path = Join-Path $build $name
             if (Test-Path -LiteralPath $path) { Remove-Item -LiteralPath $path -Recurse -Force }
           }
+          $nodeModules = Join-Path $env:GITHUB_WORKSPACE 'baseline/node_modules'
+          if (Test-Path -LiteralPath $nodeModules) { Remove-Item -LiteralPath $nodeModules -Recurse -Force }
       - name: Build custom installer
         working-directory: custom
         run: |
