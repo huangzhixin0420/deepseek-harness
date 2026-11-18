@@ -1,0 +1,160 @@
+name: Package Custom Core Desktop · Windows · x64
+
+on:
+  workflow_dispatch:
+    inputs:
+      publish_release:
+        description: '发布 Release：当前工作流只构建并审计定制包，验收与发布由后续任务接入；为真时本轮直接失败'
+        type: boolean
+        default: false
+        required: false
+      release_tag:
+        description: 'Release 标签：publish_release 为真时必填；当前工作流不创建 Release'
+        type: string
+        default: ''
+        required: false
+
+permissions:
+  contents: read
+
+concurrency:
+  group: desktop-custom-core-windows
+  cancel-in-progress: false
+
+jobs:
+  package:
+    outputs:
+      custom-artifact: custom-core-custom-${{ github.run_id }}-${{ github.run_attempt }}
+      baseline-artifact: custom-core-baseline-${{ github.run_id }}-${{ github.run_attempt }}
+      custom-installer: ${{ steps.stage.outputs.custom-installer }}
+      baseline-installer: ${{ steps.stage.outputs.baseline-installer }}
+    runs-on: windows-2022
+    timeout-minutes: 180
+    defaults:
+      run:
+        shell: pwsh
+    env:
+      DSH_TELEMETRY_DISABLED: '1'
+      # Official dsh-v0.2.2-rc.3 source; the baseline preparation script pins the same commit.
+      BASELINE_OFFICIAL_COMMIT: 38a6a5c965aa99ab525161efb7cc5cf1fe62fced
+      # Task 1 packaging patch: unsigned Windows packaging without release settings.
+      BASELINE_PACKAGING_COMMIT: 89e1904d55e7f4b9560595addfecd48a088d88bc
+    steps:
+      - name: Refuse release requests this workflow cannot honour
+        run: |
+          if ('${{ inputs.publish_release }}' -eq 'true') {
+            throw 'custom core: this workflow only builds and audits the custom package; release publishing is not implemented yet'
+          }
+      - name: Checkout official baseline source
+        uses: actions/checkout@v7.0.1
+        with:
+          ref: ${{ env.BASELINE_OFFICIAL_COMMIT }}
+          path: baseline
+          # The packaging patch commit lives on a branch, so the baseline checkout needs every ref.
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Checkout custom core source
+        uses: actions/checkout@v7.0.1
+        with:
+          path: custom
+          persist-credentials: false
+      - uses: pnpm/action-setup@v5.0.0
+        with:
+          package_json_file: custom/package.json
+          dest: ${{ runner.temp }}/setup-pnpm-${{ github.run_id }}-${{ github.run_attempt }}
+      - uses: actions/setup-node@v7.0.0
+        with:
+          node-version: '24'
+      - name: Configure the shared package cache
+        run: |
+          $cache = Join-Path $env:RUNNER_TEMP 'dsh-desktop-package-cache'
+          New-Item -ItemType Directory -Path $cache -Force | Out-Null
+          "DSH_DESKTOP_PACKAGE_CACHE_DIR=$cache" >> $env:GITHUB_ENV
+      - name: Prepare baseline packaging scripts
+        working-directory: custom
+        run: |
+          $source = Join-Path $env:GITHUB_WORKSPACE 'baseline'
+          $record = node apps/desktop/scripts/prepare-custom-core-baseline.mjs --source $source --packaging-commit $env:BASELINE_PACKAGING_COMMIT
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          $record
+          $record | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Append -Encoding utf8
+      - name: Install locked dependencies for the baseline
+        working-directory: baseline
+        run: |
+          pnpm install --frozen-lockfile
+          exit $LASTEXITCODE
+      - name: Install locked dependencies for the custom package
+        working-directory: custom
+        run: |
+          pnpm install --frozen-lockfile
+          exit $LASTEXITCODE
+      - name: Build baseline installer
+        working-directory: baseline
+        run: |
+          pnpm run package:desktop:win:x64:unsigned
+          exit $LASTEXITCODE
+      - name: Free baseline build intermediates
+        run: |
+          # The custom build runs from its own checkout, so the baseline only keeps its installer.
+          $build = Join-Path $env:GITHUB_WORKSPACE 'baseline/apps/desktop/.desktop-build/targets/win-x64'
+          foreach ($name in @('dsh', 'dsh-pnpm', 'electron', 'installer-ui', 'packed', 'runtime', 'unsigned-artifacts/win-unpacked')) {
+            $path = Join-Path $build $name
+            if (Test-Path -LiteralPath $path) { Remove-Item -LiteralPath $path -Recurse -Force }
+          }
+      - name: Build custom installer
+        working-directory: custom
+        run: |
+          pnpm run package:desktop:win:x64:unsigned
+          exit $LASTEXITCODE
+      - name: Audit custom core package
+        working-directory: custom
+        run: |
+          $report = Join-Path $env:RUNNER_TEMP 'custom-core-artifacts/custom/desktop-package-audit.json'
+          New-Item -ItemType Directory -Path (Split-Path -Path $report) -Force | Out-Null
+          $build = Join-Path $env:GITHUB_WORKSPACE 'custom/apps/desktop/.desktop-build/targets/win-x64'
+          $summary = node --import tsx apps/desktop/scripts/verify-custom-core-package.ts `
+            --packages (Join-Path $build 'package-set/desktop-packages.json') `
+            --runtime (Join-Path $build 'dsh/desktop-runtime.json') `
+            --app (Join-Path $build 'unsigned-artifacts/win-unpacked')
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          $summary | Out-File -FilePath $report -Encoding utf8
+      - name: Stage installers and digests
+        id: stage
+        run: |
+          function Copy-CustomCorePackage {
+            param([string]$Source, [string]$Destination, [string]$Label)
+            $installers = @(Get-ChildItem -LiteralPath $Source -File -Filter '*-win-x64-unsigned.exe')
+            if ($installers.Count -ne 1) {
+              throw "custom core: the $Label build produced $($installers.Count) Windows x64 unsigned installers; expected exactly 1 in $Source"
+            }
+            $installer = $installers[0]
+            New-Item -ItemType Directory -Path $Destination -Force | Out-Null
+            $staged = Join-Path $Destination $installer.Name
+            Copy-Item -LiteralPath $installer.FullName -Destination $staged
+            $digest = (Get-FileHash -LiteralPath $staged -Algorithm SHA256).Hash.ToLowerInvariant()
+            [IO.File]::WriteAllText("$($staged).sha256", "$digest  $($installer.Name)`n")
+            return $installer.Name
+          }
+          $stagingRoot = Join-Path $env:RUNNER_TEMP 'custom-core-artifacts'
+          $artifacts = Join-Path $env:GITHUB_WORKSPACE 'custom/apps/desktop/.desktop-build/targets/win-x64/unsigned-artifacts'
+          $baselineArtifacts = Join-Path $env:GITHUB_WORKSPACE 'baseline/apps/desktop/.desktop-build/targets/win-x64/unsigned-artifacts'
+          $custom = Copy-CustomCorePackage -Source $artifacts -Destination (Join-Path $stagingRoot 'custom') -Label 'custom'
+          $control = Copy-CustomCorePackage -Source $baselineArtifacts -Destination (Join-Path $stagingRoot 'baseline') -Label 'baseline'
+          $report = Join-Path $stagingRoot 'custom/desktop-package-audit.json'
+          if (-not (Test-Path -LiteralPath $report -PathType Leaf)) { throw "custom core: the audit report is missing at $report" }
+          "custom-installer=$custom" >> $env:GITHUB_OUTPUT
+          "baseline-installer=$control" >> $env:GITHUB_OUTPUT
+      - name: Upload custom core package
+        uses: actions/upload-artifact@v7.0.1
+        with:
+          name: custom-core-custom-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/custom-core-artifacts/custom/
+          if-no-files-found: error
+          retention-days: 7
+      - name: Upload baseline package
+        uses: actions/upload-artifact@v7.0.1
+        with:
+          name: custom-core-baseline-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/custom-core-artifacts/baseline/
+          if-no-files-found: error
+          retention-days: 7
