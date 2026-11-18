@@ -1,0 +1,339 @@
+name: Package Custom Core Desktop · Windows · x64
+
+on:
+  workflow_dispatch:
+    inputs:
+      publish_release:
+        description: '发布 Prerelease：仅当构建、审计与隔离覆盖安装验收全部通过时创建；默认只构建并验收，不碰 Release'
+        type: boolean
+        default: false
+        required: false
+      release_tag:
+        description: 'Release 标签：publish_release 为真时必填，必须是安全标签（字母数字起头，仅含 A-Z a-z 0-9 . _ + -）'
+        type: string
+        default: ''
+        required: false
+
+permissions:
+  contents: read
+
+concurrency:
+  group: desktop-custom-core-windows
+  cancel-in-progress: false
+
+jobs:
+  package:
+    outputs:
+      custom-artifact: custom-core-custom-${{ github.run_id }}-${{ github.run_attempt }}
+      baseline-artifact: custom-core-baseline-${{ github.run_id }}-${{ github.run_attempt }}
+      custom-installer: ${{ steps.stage.outputs.custom-installer }}
+      baseline-installer: ${{ steps.stage.outputs.baseline-installer }}
+    runs-on: windows-2022
+    timeout-minutes: 180
+    defaults:
+      run:
+        shell: pwsh
+    env:
+      DSH_TELEMETRY_DISABLED: '1'
+      # Official dsh-v0.2.2-rc.3 source; the baseline preparation script pins the same commit.
+      BASELINE_OFFICIAL_COMMIT: 38a6a5c965aa99ab525161efb7cc5cf1fe62fced
+      # Task 1 packaging patch: unsigned Windows packaging without release settings.
+      BASELINE_PACKAGING_COMMIT: 89e1904d55e7f4b9560595addfecd48a088d88bc
+    steps:
+      - name: Checkout official baseline source
+        uses: actions/checkout@v7.0.1
+        with:
+          ref: ${{ env.BASELINE_OFFICIAL_COMMIT }}
+          path: baseline
+          # The packaging patch commit lives on a branch, so the baseline checkout needs every ref.
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Checkout custom core source
+        uses: actions/checkout@v7.0.1
+        with:
+          path: custom
+          persist-credentials: false
+      - uses: pnpm/action-setup@v5.0.0
+        with:
+          package_json_file: custom/package.json
+          dest: ${{ runner.temp }}/setup-pnpm-${{ github.run_id }}-${{ github.run_attempt }}
+      - uses: actions/setup-node@v7.0.0
+        with:
+          node-version: '24'
+      - name: Configure the shared package cache
+        run: |
+          $cache = Join-Path $env:RUNNER_TEMP 'dsh-desktop-package-cache'
+          $store = Join-Path $env:RUNNER_TEMP 'pnpm-store'
+          New-Item -ItemType Directory -Path $cache -Force | Out-Null
+          New-Item -ItemType Directory -Path $store -Force | Out-Null
+          "DSH_DESKTOP_PACKAGE_CACHE_DIR=$cache" >> $env:GITHUB_ENV
+          # Both checkouts install into one workspace store, so the second install resolves from the first.
+          "PNPM_STORE_DIR=$store" >> $env:GITHUB_ENV
+          "npm_config_store_dir=$store" >> $env:GITHUB_ENV
+      - name: Prepare baseline packaging scripts
+        working-directory: custom
+        run: |
+          $source = Join-Path $env:GITHUB_WORKSPACE 'baseline'
+          $record = node apps/desktop/scripts/prepare-custom-core-baseline.mjs --source $source --packaging-commit $env:BASELINE_PACKAGING_COMMIT
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          $record
+          $record | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Append -Encoding utf8
+      - name: Guard free disk space before the baseline install
+        run: |
+          # Both checkouts and one build must fit; the guard prints the bytes CI records and fails closed.
+          $guard = Join-Path $env:GITHUB_WORKSPACE 'custom/apps/desktop/scripts/assert-custom-core-disk-space.ps1'
+          if (-not (Test-Path -LiteralPath $guard -PathType Leaf)) { throw "custom core disk: the guard is missing at $guard" }
+          & $guard -Stage 'before the baseline install' -Path $env:GITHUB_WORKSPACE, $env:RUNNER_TEMP
+          exit $LASTEXITCODE
+      - name: Install locked dependencies for the baseline
+        working-directory: baseline
+        run: |
+          # Evidence for the shared pnpm: both checkouts pin the same packageManager and lockfileVersion.
+          $lockfile = Select-String -LiteralPath pnpm-lock.yaml -Pattern '^lockfileVersion:' | Select-Object -First 1
+          if ($null -eq $lockfile) { throw 'baseline: pnpm-lock.yaml declares no lockfileVersion' }
+          Write-Output "baseline: pnpm $((pnpm --version | Out-String).Trim()), $($lockfile.Line.Trim())"
+          pnpm install --frozen-lockfile
+          exit $LASTEXITCODE
+      - name: Install locked dependencies for the custom package
+        working-directory: custom
+        run: |
+          $lockfile = Select-String -LiteralPath pnpm-lock.yaml -Pattern '^lockfileVersion:' | Select-Object -First 1
+          if ($null -eq $lockfile) { throw 'custom: pnpm-lock.yaml declares no lockfileVersion' }
+          Write-Output "custom: pnpm $((pnpm --version | Out-String).Trim()), $($lockfile.Line.Trim())"
+          pnpm install --frozen-lockfile
+          exit $LASTEXITCODE
+      - name: Build baseline installer
+        working-directory: baseline
+        run: |
+          pnpm run package:desktop:win:x64:unsigned
+          exit $LASTEXITCODE
+      - name: Free baseline build intermediates
+        run: |
+          # Only intermediates are released here: the built installer beside win-unpacked and the audit
+          # report under the runner temp still serve the acceptance and release jobs.
+          $build = Join-Path $env:GITHUB_WORKSPACE 'baseline/apps/desktop/.desktop-build/targets/win-x64'
+          foreach ($name in @('dsh', 'dsh-pnpm', 'electron', 'installer-ui', 'packed', 'runtime', 'unsigned-artifacts/win-unpacked')) {
+            $path = Join-Path $build $name
+            if (Test-Path -LiteralPath $path) { Remove-Item -LiteralPath $path -Recurse -Force }
+          }
+          $nodeModules = Join-Path $env:GITHUB_WORKSPACE 'baseline/node_modules'
+          if (Test-Path -LiteralPath $nodeModules) { Remove-Item -LiteralPath $nodeModules -Recurse -Force }
+      - name: Guard free disk space after the baseline cleanup
+        run: |
+          # The custom install and its full build still have to fit; print what remains and fail closed.
+          $guard = Join-Path $env:GITHUB_WORKSPACE 'custom/apps/desktop/scripts/assert-custom-core-disk-space.ps1'
+          if (-not (Test-Path -LiteralPath $guard -PathType Leaf)) { throw "custom core disk: the guard is missing at $guard" }
+          & $guard -Stage 'after the baseline cleanup' -Path $env:GITHUB_WORKSPACE, $env:RUNNER_TEMP
+          exit $LASTEXITCODE
+      - name: Build custom installer
+        working-directory: custom
+        run: |
+          pnpm run package:desktop:win:x64:unsigned
+          exit $LASTEXITCODE
+      - name: Audit custom core package
+        working-directory: custom
+        run: |
+          $report = Join-Path $env:RUNNER_TEMP 'custom-core-artifacts/custom/desktop-package-audit.json'
+          New-Item -ItemType Directory -Path (Split-Path -Path $report) -Force | Out-Null
+          $build = Join-Path $env:GITHUB_WORKSPACE 'custom/apps/desktop/.desktop-build/targets/win-x64'
+          $summary = node --import tsx apps/desktop/scripts/verify-custom-core-package.ts `
+            --packages (Join-Path $build 'package-set/desktop-packages.json') `
+            --runtime (Join-Path $build 'dsh/desktop-runtime.json') `
+            --app (Join-Path $build 'unsigned-artifacts/win-unpacked')
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          $summary | Out-File -FilePath $report -Encoding utf8
+      - name: Stage installers and digests
+        id: stage
+        run: |
+          function Copy-CustomCorePackage {
+            param([string]$Source, [string]$Destination, [string]$Label)
+            $installers = @(Get-ChildItem -LiteralPath $Source -File -Filter '*-win-x64-unsigned.exe')
+            if ($installers.Count -ne 1) {
+              throw "custom core: the $Label build produced $($installers.Count) Windows x64 unsigned installers; expected exactly 1 in $Source"
+            }
+            $installer = $installers[0]
+            New-Item -ItemType Directory -Path $Destination -Force | Out-Null
+            $staged = Join-Path $Destination $installer.Name
+            Copy-Item -LiteralPath $installer.FullName -Destination $staged
+            $digest = (Get-FileHash -LiteralPath $staged -Algorithm SHA256).Hash.ToLowerInvariant()
+            [IO.File]::WriteAllText("$($staged).sha256", "$digest  $($installer.Name)`n")
+            return $installer.Name
+          }
+          $stagingRoot = Join-Path $env:RUNNER_TEMP 'custom-core-artifacts'
+          $artifacts = Join-Path $env:GITHUB_WORKSPACE 'custom/apps/desktop/.desktop-build/targets/win-x64/unsigned-artifacts'
+          $baselineArtifacts = Join-Path $env:GITHUB_WORKSPACE 'baseline/apps/desktop/.desktop-build/targets/win-x64/unsigned-artifacts'
+          $custom = Copy-CustomCorePackage -Source $artifacts -Destination (Join-Path $stagingRoot 'custom') -Label 'custom'
+          $control = Copy-CustomCorePackage -Source $baselineArtifacts -Destination (Join-Path $stagingRoot 'baseline') -Label 'baseline'
+          $report = Join-Path $stagingRoot 'custom/desktop-package-audit.json'
+          if (-not (Test-Path -LiteralPath $report -PathType Leaf)) { throw "custom core: the audit report is missing at $report" }
+          "custom-installer=$custom" >> $env:GITHUB_OUTPUT
+          "baseline-installer=$control" >> $env:GITHUB_OUTPUT
+      - name: Upload custom core package
+        uses: actions/upload-artifact@v7.0.1
+        with:
+          name: custom-core-custom-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/custom-core-artifacts/custom/
+          if-no-files-found: error
+          retention-days: 7
+      - name: Upload baseline package
+        uses: actions/upload-artifact@v7.0.1
+        with:
+          name: custom-core-baseline-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/custom-core-artifacts/baseline/
+          if-no-files-found: error
+          retention-days: 7
+
+  acceptance:
+    needs: package
+    runs-on: windows-2022
+    timeout-minutes: 60
+    defaults:
+      run:
+        shell: pwsh
+    env:
+      DSH_TELEMETRY_DISABLED: '1'
+    steps:
+      - name: Checkout acceptance sources
+        uses: actions/checkout@v7.0.1
+        with:
+          persist-credentials: false
+      - name: Download the baseline package
+        uses: actions/download-artifact@v8.0.1
+        with:
+          name: ${{ needs.package.outputs.baseline-artifact }}
+          path: ${{ runner.temp }}/custom-core-acceptance/baseline
+      - name: Download the custom package
+        uses: actions/download-artifact@v8.0.1
+        with:
+          name: ${{ needs.package.outputs.custom-artifact }}
+          path: ${{ runner.temp }}/custom-core-acceptance/custom
+      - name: Verify the downloaded installers against their sidecars
+        run: |
+          $root = Join-Path $env:RUNNER_TEMP 'custom-core-acceptance'
+          $pairs = @(
+            @{ Label = 'baseline'; Directory = (Join-Path $root 'baseline'); Name = '${{ needs.package.outputs.baseline-installer }}' },
+            @{ Label = 'custom'; Directory = (Join-Path $root 'custom'); Name = '${{ needs.package.outputs.custom-installer }}' }
+          )
+          foreach ($pair in $pairs) {
+            $installer = Join-Path $pair.Directory $pair.Name
+            $sidecar = "$installer.sha256"
+            if (-not (Test-Path -LiteralPath $installer -PathType Leaf)) {
+              throw "custom core acceptance: the $($pair.Label) installer is missing at $installer"
+            }
+            if (-not (Test-Path -LiteralPath $sidecar -PathType Leaf)) {
+              throw "custom core acceptance: the $($pair.Label) digest is missing at $sidecar"
+            }
+            $expected = ((Get-Content -LiteralPath $sidecar -Raw).Trim() -split '\s+')[0]
+            $actual = (Get-FileHash -LiteralPath $installer -Algorithm SHA256).Hash.ToLowerInvariant()
+            if ($expected -ne $actual) {
+              throw "custom core acceptance: the $($pair.Label) SHA256 is $actual; expected $expected"
+            }
+            Write-Output "$($pair.Label) sha256=$actual"
+          }
+      - name: Accept the overwrite installation in the isolated runner profile
+        run: |
+          $root = Join-Path $env:RUNNER_TEMP 'custom-core-acceptance'
+          $script = Join-Path $env:GITHUB_WORKSPACE 'apps/desktop/scripts/accept-custom-core-windows.ps1'
+          & $script `
+            -BaselineInstaller (Join-Path $root "baseline/${{ needs.package.outputs.baseline-installer }}") `
+            -CustomInstaller (Join-Path $root "custom/${{ needs.package.outputs.custom-installer }}") `
+            -Report (Join-Path $root 'acceptance-report.json')
+          exit $LASTEXITCODE
+      - name: Upload the acceptance report
+        if: always()
+        uses: actions/upload-artifact@v7.0.1
+        with:
+          name: custom-core-acceptance-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/custom-core-acceptance/acceptance-report.json
+          if-no-files-found: error
+          retention-days: 7
+
+  release:
+    needs: [package, acceptance]
+    if: ${{ inputs.publish_release == true }}
+    permissions:
+      contents: write
+    runs-on: windows-2022
+    timeout-minutes: 30
+    defaults:
+      run:
+        shell: pwsh
+    env:
+      DSH_TELEMETRY_DISABLED: '1'
+    steps:
+      - name: Checkout release sources
+        uses: actions/checkout@v7.0.1
+        with:
+          persist-credentials: false
+      - name: Download the accepted custom package
+        uses: actions/download-artifact@v8.0.1
+        with:
+          name: ${{ needs.package.outputs.custom-artifact }}
+          path: ${{ runner.temp }}/custom-core-release/custom
+      - name: Download the acceptance report
+        uses: actions/download-artifact@v8.0.1
+        with:
+          name: custom-core-acceptance-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/custom-core-release/report
+      - name: Validate the release tag and the accepted assets
+        env:
+          RELEASE_TAG: ${{ inputs.release_tag }}
+        run: |
+          $tag = $env:RELEASE_TAG
+          if ([string]::IsNullOrWhiteSpace($tag)) {
+            throw 'custom core release: release_tag is required when publish_release is true'
+          }
+          if ($tag -cnotmatch '^[A-Za-z0-9][A-Za-z0-9._+-]{0,63}$') {
+            throw "custom core release: release_tag ``$tag`` is not a safe tag; use letters, digits, dot, underscore, plus and hyphen, starting with a letter or digit"
+          }
+          $root = Join-Path $env:RUNNER_TEMP 'custom-core-release'
+          $installer = Join-Path $root "custom/${{ needs.package.outputs.custom-installer }}"
+          $sidecar = "$installer.sha256"
+          if (-not (Test-Path -LiteralPath $installer -PathType Leaf)) { throw "custom core release: the accepted installer is missing at $installer" }
+          if (-not (Test-Path -LiteralPath $sidecar -PathType Leaf)) { throw "custom core release: the accepted digest is missing at $sidecar" }
+          $expected = ((Get-Content -LiteralPath $sidecar -Raw).Trim() -split '\s+')[0]
+          $actual = (Get-FileHash -LiteralPath $installer -Algorithm SHA256).Hash.ToLowerInvariant()
+          if ($expected -ne $actual) { throw "custom core release: the installer SHA256 is $actual; expected $expected" }
+
+          $reportPath = Join-Path $root 'report/acceptance-report.json'
+          if (-not (Test-Path -LiteralPath $reportPath -PathType Leaf)) { throw "custom core release: the acceptance report is missing at $reportPath" }
+          $report = Get-Content -LiteralPath $reportPath -Raw | ConvertFrom-Json -Depth 16
+          if ($report.outcome -ne 'passed') { throw "custom core release: the acceptance report outcome is $($report.outcome); refusing to publish" }
+          if ($report.installers.custom.sha256 -ne $actual) {
+            throw "custom core release: the acceptance report accepted $($report.installers.custom.sha256), not this installer"
+          }
+          if (-not $report.data.identical) { throw 'custom core release: the acceptance report did not preserve the seeded configuration hashes' }
+          if (-not $report.session.reopened) {
+            throw 'custom core release: the acceptance report did not reopen the seeded Session on the custom installation'
+          }
+
+          $notes = Join-Path $root 'release-notes.md'
+          $lines = @(
+            '未签名的 Windows x64 安装包：SmartScreen 会拦截首次运行，请点「更多信息 → 仍要运行」。',
+            '',
+            '本安装包沿用官方身份（com.deepseek.dsh / DeepSeek Harness），会覆盖同一目录内的同版本官方安装；',
+            '覆盖安装验收已确认原有会话、设置、凭据与已启用插件均被保留（数据哈希逐项一致）。',
+            '',
+            "安装包 SHA256：``$actual``",
+            "基线安装包 SHA256：``$($report.installers.baseline.sha256)``",
+            '验收事实：',
+            "- 覆盖安装后配置哈希一致：$($report.data.identical)",
+            "- 基线 own 工具可见且可执行：$($report.observation.baseline.execution.text)",
+            "- 定制 own 工具不可见且调用被拒绝：$($report.observation.custom.execution.code)",
+            "- 基线会话 id：``$($report.session.id)``",
+            "- 定制安装重新打开同一会话：$($report.session.reopened)",
+            '',
+            '内置 core 行为只在覆盖安装验收通过的这一份安装包上生效。'
+          )
+          Set-Content -LiteralPath $notes -Value ($lines -join "`n") -Encoding utf8
+      - name: Create the prerelease
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ inputs.release_tag }}
+        run: |
+          $root = Join-Path $env:RUNNER_TEMP 'custom-core-release'
+          $installer = Join-Path $root "custom/${{ needs.package.outputs.custom-installer }}"
+          $notes = Join-Path $root 'release-notes.md'
+          if (-not (Test-Path -LiteralPath $notes -PathType Leaf)) { throw "custom core release: the release notes are missing at $notes" }
+          gh release create $env:RELEASE_TAG --target $env:GITHUB_SHA --prerelease --title "Custom core $env:RELEASE_TAG" --notes-file $notes $installer "$installer.sha256"
+          exit $LASTEXITCODE
