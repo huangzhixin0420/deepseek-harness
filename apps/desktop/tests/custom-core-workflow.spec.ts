@@ -405,6 +405,65 @@ it.skipIf(!hasPwsh)('normalizes the profile bundle list and rejects a snapshot w
   }
 })
 
+it.skipIf(!hasPwsh)('keeps acceptance logs out of installer and observation return values', () => {
+  const root = mkdtempSync(join(tmpdir(), 'custom-core-return-values-'))
+  try {
+    const probe = join(root, 'probe.ps1')
+    writeFileSync(probe, `$ErrorActionPreference = 'Stop'
+$InformationPreference = 'SilentlyContinue'
+$scriptPath = $args[0]
+$root = $args[1]
+$tokens = $null
+$problems = $null
+$ast = [System.Management.Automation.Language.Parser]::ParseFile($scriptPath, [ref]$tokens, [ref]$problems)
+foreach ($name in @('Install-Product', 'Wait-FixtureObservation')) {
+    $definition = $ast.Find({
+        param($node)
+        $node -is [System.Management.Automation.Language.FunctionDefinitionAst] -and $node.Name -eq $name
+    }, $true)
+    . ([scriptblock]::Create($definition.Extent.Text))
+}
+function Start-Process {
+    param($FilePath, $ArgumentList, [switch]$PassThru, [switch]$Wait, $WindowStyle)
+    return [pscustomobject]@{ ExitCode = 0 }
+}
+$exitCode = Install-Product -Installer 'fixture.exe' -Arguments '/S' -Label 'fixture'
+$report = Join-Path $root 'observation.json'
+Set-Content -LiteralPath $report -Value 'fixture'
+$script:reads = 0
+function Get-Content {
+    param($LiteralPath, [switch]$Raw)
+    $script:reads += 1
+    if ($script:reads -eq 1) { return '{' }
+    return '{"marker":"ready"}'
+}
+$TimeoutSeconds = 1
+$observation = Wait-FixtureObservation -Path $report -Process ([Diagnostics.Process]::GetCurrentProcess()) -Label 'fixture'
+[ordered]@{
+    installType = $exitCode.GetType().Name
+    installExit = if ($exitCode -is [int]) { $exitCode } else { -1 }
+    observationType = $observation.GetType().Name
+    observationMarker = if ($observation -is [pscustomobject]) { [string]$observation.marker } else { '' }
+    reads = $script:reads
+} | ConvertTo-Json -Compress
+`)
+    const run = spawnSync('pwsh', [
+      '-NoLogo', '-NoProfile', '-NonInteractive', '-File', probe, ACCEPTANCE_SCRIPT, root,
+    ], { encoding: 'utf8', timeout: 60_000 })
+    expect(run.stderr).toBe('')
+    expect(run.status).toBe(0)
+    expect(JSON.parse(run.stdout.trim().split(/\r?\n/u).at(-1)!)).toEqual({
+      installType: 'Int32',
+      installExit: 0,
+      observationType: 'PSCustomObject',
+      observationMarker: 'ready',
+      reads: 2,
+    })
+  } finally {
+    rmSync(root, { recursive: true, force: true })
+  }
+})
+
 it.skipIf(!hasPwsh)('parses the acceptance script, its helpers, and the disk guard', () => {
   const root = mkdtempSync(join(tmpdir(), 'custom-core-parse-'))
   try {

@@ -217,7 +217,7 @@ function Compare-DataHashes {
 
 function Install-Product {
     param([string]$Installer, [string]$Arguments, [string]$Label)
-    Write-Output "== install $Label ($Arguments)"
+    Write-Host "== install $Label ($Arguments)"
     $process = Start-Process -FilePath $Installer -ArgumentList $Arguments -PassThru -Wait -WindowStyle Hidden
     if ($null -eq $process.ExitCode) { throw "custom core acceptance: the $Label installer produced no exit code" }
     return [int]$process.ExitCode
@@ -250,9 +250,9 @@ function Wait-FixtureObservation {
             try {
                 return (Get-Content -LiteralPath $Path -Raw | ConvertFrom-Json -Depth 16)
             } catch [System.Text.Json.JsonException] {
-                Write-Output "waiting for a complete $Label fixture report at $Path"
+                Write-Host "waiting for a complete $Label fixture report at $Path"
             } catch [ArgumentException] {
-                Write-Output "waiting for a readable $Label fixture report at $Path"
+                Write-Host "waiting for a readable $Label fixture report at $Path"
             }
         }
         if ($Process.HasExited) {
