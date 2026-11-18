@@ -3,10 +3,11 @@
  *
  * The isolated runner copies this package into the Desktop profile's plugin
  * directory and enables it through the profile patch layer. On load it
- * registers one scope-owned tool behind an `includeOwn` allow-list and reports
- * what the installed core did: whether the registration exists in the catalog,
- * whether it is projected as visible, and whether a call to it is admitted.
- * Bare `rc3` admits the call; the unified core rejects it.
+ * registers one Host-global inherited tool and one scope-owned tool behind an
+ * `includeOwn` allow-list, then reports what the installed core did: whether
+ * the own registration exists in the catalog, whether it is projected as
+ * visible, and whether a call to it is admitted. Bare `rc3` admits the call;
+ * the unified core rejects it.
  *
  * It also creates or resumes one real Session through the installed core, which
  * is the recognisable data the overwrite install must preserve.
@@ -17,11 +18,9 @@ import { dirname } from 'node:path'
 
 /** Tool the fixture registers inside its own scope. */
 const OWN_TOOL = 'fixture_unified_own_tool'
-/** Inherited tool named by the allow-list: never this scope's own registration. */
-const INHERITED_TOOL = 'pwsh'
+/** Host-global tool inherited by the scope and named by its allow-list. */
+const INHERITED_TOOL = 'fixture_unified_inherited_tool'
 const OWN_TOOL_REPLY = 'fixture-own-tool-ran'
-const TOOL_WAIT_MILLISECONDS = 120_000
-const POLL_MILLISECONDS = 100
 
 export const name = 'fixture-unified-own-tool'
 export const inject = ['tools']
@@ -35,16 +34,6 @@ function runOptions() {
     mode: process.env['DSH_FIXTURE_OWN_TOOL_MODE'] === 'seed' ? 'seed' : 'observe',
     sessionId: process.env['DSH_FIXTURE_OWN_TOOL_SESSION'] ?? '',
   }
-}
-
-/** Wait until the profile has registered the inherited tool this scope must name. */
-async function waitForInheritedTool(ctx) {
-  const deadline = Date.now() + TOOL_WAIT_MILLISECONDS
-  while (Date.now() < deadline) {
-    if (ctx.tools.get(INHERITED_TOOL) !== undefined) return true
-    await new Promise(resolve => setTimeout(resolve, POLL_MILLISECONDS))
-  }
-  return false
 }
 
 /** Describe one settled execution without leaking tool bodies. */
@@ -119,9 +108,20 @@ async function observe(ctx, options) {
   }
   let liftRestriction
   let scope
+  let disposeInherited
   try {
-    report.inheritedToolPresent = await waitForInheritedTool(ctx)
-    if (!report.inheritedToolPresent) throw new Error(`the profile never registered the inherited tool "${INHERITED_TOOL}"`)
+    disposeInherited = ctx.tools.register({
+      name: INHERITED_TOOL,
+      description: 'Acceptance fixture tool inherited by one agent-like scope.',
+      parameters: { type: 'object', properties: {} },
+      output: {
+        schema: { type: 'string' },
+        render: (_args, value) => [{ type: 'text', text: value }],
+      },
+      execute: () => Promise.resolve('fixture-inherited-tool-ran'),
+    })
+    report.inheritedToolPresent = ctx.tools.get(INHERITED_TOOL) !== undefined
+    if (!report.inheritedToolPresent) throw new Error(`the fixture could not register the inherited tool "${INHERITED_TOOL}"`)
     // Resolved through the installation's profile resolution; a failure is reported, not swallowed by the loader.
     const { createScope } = await import('@deepseek-ai/dsh-scope')
     const key = { id: 'fixture-unified-own-tool' }
@@ -153,6 +153,7 @@ async function observe(ctx, options) {
   } finally {
     if (liftRestriction !== undefined) liftRestriction()
     if (scope !== undefined) await scope.dispose()
+    if (disposeInherited !== undefined) disposeInherited()
   }
   writeReport(options.report, report)
 }

@@ -1,8 +1,11 @@
 /** Static acceptance for the Windows custom-core build, installation acceptance, and prerelease pipeline. */
 import { spawnSync } from 'node:child_process'
-import { mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs'
+import {
+  copyFileSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, symlinkSync, writeFileSync,
+} from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join, resolve } from 'node:path'
+import { pathToFileURL } from 'node:url'
 import yaml from 'js-yaml'
 import { expect, it } from 'vitest'
 
@@ -234,7 +237,7 @@ it('isolates the fixture from the product package', () => {
   expect(manifest).toMatchObject({ name: 'dsh-fixture-unified-own-tool', private: true })
   const entry = readFileSync(FIXTURE_ENTRY, 'utf8')
   expect(entry).toContain('fixture_unified_own_tool')
-  expect(entry).toContain("const INHERITED_TOOL = 'pwsh'")
+  expect(entry).toContain("const INHERITED_TOOL = 'fixture_unified_inherited_tool'")
   expect(entry).toContain('includeOwn: true')
   expect(entry).toContain('allow: [INHERITED_TOOL]')
   expect(entry).toContain('createScope')
@@ -244,29 +247,82 @@ it('isolates the fixture from the product package', () => {
   expect(readFileSync(WORKFLOW_PATH, 'utf8')).not.toContain('apps/desktop/scripts/fixtures')
 })
 
-it('names an inherited tool that the official Windows profile enables', async () => {
-  const { parseEntryYaml } = await import('@deepseek-ai/cordis-plugin-include')
-  const { evaluate } = await import('@deepseek-ai/cordis-plugin-loader')
-  const parsed = parseEntryYaml(readFileSync(join(REPOSITORY, 'packages', 'bundle', 'base', 'cordis.patch.yml'), 'utf8'))
-  if (!Array.isArray(parsed)) throw new TypeError('base patch must parse to a patch list')
-  const rows = parsed.flatMap(patch =>
-    typeof patch === 'object' && patch !== null
-      ? (patch as { insert?: Record<string, unknown>[] }).insert ?? []
-      : [],
-  )
-  const enabled = ['tool-bash', 'tool-pwsh'].filter((id) => {
-    const row = rows.find(candidate => candidate.id === id)
-    const expression = (row?.disabled as { __jsExpr?: string } | undefined)?.__jsExpr
-    if (expression === undefined) throw new Error(`${id} must gate on a !!js disabled expression`)
-    return !evaluate({ process: { platform: 'win32' } }, expression)
-  }).map(id => id.slice('tool-'.length))
-  expect(enabled).toEqual(['pwsh'])
-
-  const entry = readFileSync(FIXTURE_ENTRY, 'utf8')
-  const inherited = /const INHERITED_TOOL = '([^']+)'/u.exec(entry)?.[1]
-  expect(enabled).toContain(inherited)
-  const acceptance = readFileSync(ACCEPTANCE_SCRIPT, 'utf8')
-  expect(acceptance).toContain(`$inheritedTool = '${inherited}'`)
+it('registers its inherited tool on the Host plane without any agent preset', () => {
+  const root = mkdtempSync(join(tmpdir(), 'custom-core-host-fixture-'))
+  const reportPath = join(root, 'observation.json')
+  const afterPath = join(root, 'after.json')
+  const runnerPath = join(root, 'runner.mjs')
+  const fixtureEntry = join(root, 'index.mjs')
+  try {
+    copyFileSync(FIXTURE_ENTRY, fixtureEntry)
+    const scopeNamespace = join(root, 'node_modules', '@deepseek-ai')
+    mkdirSync(scopeNamespace, { recursive: true })
+    symlinkSync(
+      join(REPOSITORY, 'packages', 'core', 'scope'), join(scopeNamespace, 'dsh-scope'),
+      process.platform === 'win32' ? 'junction' : 'dir',
+    )
+    const moduleUrl = (path: string) => pathToFileURL(join(REPOSITORY, path)).href
+    writeFileSync(runnerPath, `
+import { existsSync, writeFileSync } from 'node:fs'
+import { Context } from ${JSON.stringify(moduleUrl('vendor/cordis/lib/index.js'))}
+import SystemPrompt from ${JSON.stringify(moduleUrl('packages/core/system-prompt/lib/index.js'))}
+import ToolRuntime from ${JSON.stringify(moduleUrl('packages/core/tools/lib/index.js'))}
+import * as NativeToolExecutor from ${JSON.stringify(moduleUrl('packages/core/tool-executor-native/lib/index.js'))}
+const reportPath = ${JSON.stringify(reportPath)}
+const afterPath = ${JSON.stringify(afterPath)}
+const ctx = new Context()
+await ctx.plugin(SystemPrompt, {})
+await ctx.plugin(ToolRuntime)
+await ctx.plugin(NativeToolExecutor)
+const fixture = await import(${JSON.stringify(pathToFileURL(fixtureEntry).href)})
+await ctx.plugin(Object.assign(fixture.apply, { inject: ['tools'] }))
+const deadline = Date.now() + 5000
+while (!existsSync(reportPath) && Date.now() < deadline) {
+  await new Promise(resolve => setTimeout(resolve, 25))
+}
+if (!existsSync(reportPath)) throw new Error('the fixture did not produce its Host-plane report')
+writeFileSync(afterPath, JSON.stringify(ctx.tools.catalog()))
+`)
+    const run = spawnSync(process.execPath, [runnerPath], {
+      encoding: 'utf8',
+      timeout: 10_000,
+      env: {
+        ...process.env,
+        DSH_FIXTURE_OWN_TOOL_REPORT: reportPath,
+        DSH_FIXTURE_OWN_TOOL_MODE: 'observe',
+        DSH_FIXTURE_OWN_TOOL_SESSION: '',
+      },
+    })
+    expect(run.error).toBeUndefined()
+    expect(run.signal).toBeNull()
+    expect(run.stderr).toBe('')
+    expect(run.status).toBe(0)
+    const observation = JSON.parse(readFileSync(reportPath, 'utf8')) as {
+      allowedInheritedTool: string
+      inheritedToolPresent: boolean
+      registered: boolean
+      catalog: string[]
+      projection: string[]
+      projectionListsOwnTool: boolean
+      restrictAccepted: boolean
+      execution: { isError: boolean; code: string | null }
+      error: string | null
+    }
+    expect(observation).toMatchObject({
+      allowedInheritedTool: 'fixture_unified_inherited_tool',
+      inheritedToolPresent: true,
+      registered: true,
+      projectionListsOwnTool: false,
+      restrictAccepted: true,
+      execution: { isError: true, code: 'UNKNOWN_TOOL' },
+      error: null,
+    })
+    expect(observation.catalog).toEqual(['fixture_unified_inherited_tool', 'fixture_unified_own_tool'])
+    expect(observation.projection).toEqual(['fixture_unified_inherited_tool'])
+    expect(JSON.parse(readFileSync(afterPath, 'utf8'))).toEqual([])
+  } finally {
+    rmSync(root, { recursive: true, force: true })
+  }
 })
 
 /** Position of one named package-job step. */
