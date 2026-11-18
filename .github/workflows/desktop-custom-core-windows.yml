@@ -4,12 +4,12 @@ on:
   workflow_dispatch:
     inputs:
       publish_release:
-        description: '发布 Release：当前工作流只构建并审计定制包，验收与发布由后续任务接入；为真时本轮直接失败'
+        description: '发布 Prerelease：仅当构建、审计与隔离覆盖安装验收全部通过时创建；默认只构建并验收，不碰 Release'
         type: boolean
         default: false
         required: false
       release_tag:
-        description: 'Release 标签：publish_release 为真时必填；当前工作流不创建 Release'
+        description: 'Release 标签：publish_release 为真时必填，必须是安全标签（字母数字起头，仅含 A-Z a-z 0-9 . _ + -）'
         type: string
         default: ''
         required: false
@@ -40,11 +40,6 @@ jobs:
       # Task 1 packaging patch: unsigned Windows packaging without release settings.
       BASELINE_PACKAGING_COMMIT: 89e1904d55e7f4b9560595addfecd48a088d88bc
     steps:
-      - name: Refuse release requests this workflow cannot honour
-        run: |
-          if ('${{ inputs.publish_release }}' -eq 'true') {
-            throw 'custom core: this workflow only builds and audits the custom package; release publishing is not implemented yet'
-          }
       - name: Checkout official baseline source
         uses: actions/checkout@v7.0.1
         with:
@@ -165,3 +160,154 @@ jobs:
           path: ${{ runner.temp }}/custom-core-artifacts/baseline/
           if-no-files-found: error
           retention-days: 7
+
+  acceptance:
+    needs: package
+    runs-on: windows-2022
+    timeout-minutes: 60
+    defaults:
+      run:
+        shell: pwsh
+    env:
+      DSH_TELEMETRY_DISABLED: '1'
+    steps:
+      - name: Checkout acceptance sources
+        uses: actions/checkout@v7.0.1
+        with:
+          persist-credentials: false
+      - name: Download the baseline package
+        uses: actions/download-artifact@v8.0.1
+        with:
+          name: ${{ needs.package.outputs.baseline-artifact }}
+          path: ${{ runner.temp }}/custom-core-acceptance/baseline
+      - name: Download the custom package
+        uses: actions/download-artifact@v8.0.1
+        with:
+          name: ${{ needs.package.outputs.custom-artifact }}
+          path: ${{ runner.temp }}/custom-core-acceptance/custom
+      - name: Verify the downloaded installers against their sidecars
+        run: |
+          $root = Join-Path $env:RUNNER_TEMP 'custom-core-acceptance'
+          $pairs = @(
+            @{ Label = 'baseline'; Directory = (Join-Path $root 'baseline'); Name = '${{ needs.package.outputs.baseline-installer }}' },
+            @{ Label = 'custom'; Directory = (Join-Path $root 'custom'); Name = '${{ needs.package.outputs.custom-installer }}' }
+          )
+          foreach ($pair in $pairs) {
+            $installer = Join-Path $pair.Directory $pair.Name
+            $sidecar = "$installer.sha256"
+            if (-not (Test-Path -LiteralPath $installer -PathType Leaf)) {
+              throw "custom core acceptance: the $($pair.Label) installer is missing at $installer"
+            }
+            if (-not (Test-Path -LiteralPath $sidecar -PathType Leaf)) {
+              throw "custom core acceptance: the $($pair.Label) digest is missing at $sidecar"
+            }
+            $expected = ((Get-Content -LiteralPath $sidecar -Raw).Trim() -split '\s+')[0]
+            $actual = (Get-FileHash -LiteralPath $installer -Algorithm SHA256).Hash.ToLowerInvariant()
+            if ($expected -ne $actual) {
+              throw "custom core acceptance: the $($pair.Label) SHA256 is $actual; expected $expected"
+            }
+            Write-Output "$($pair.Label) sha256=$actual"
+          }
+      - name: Accept the overwrite installation in the isolated runner profile
+        run: |
+          $root = Join-Path $env:RUNNER_TEMP 'custom-core-acceptance'
+          $script = Join-Path $env:GITHUB_WORKSPACE 'apps/desktop/scripts/accept-custom-core-windows.ps1'
+          & $script `
+            -BaselineInstaller (Join-Path $root "baseline/${{ needs.package.outputs.baseline-installer }}") `
+            -CustomInstaller (Join-Path $root "custom/${{ needs.package.outputs.custom-installer }}") `
+            -Report (Join-Path $root 'acceptance-report.json')
+          exit $LASTEXITCODE
+      - name: Upload the acceptance report
+        if: always()
+        uses: actions/upload-artifact@v7.0.1
+        with:
+          name: custom-core-acceptance-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/custom-core-acceptance/acceptance-report.json
+          if-no-files-found: error
+          retention-days: 7
+
+  release:
+    needs: [package, acceptance]
+    if: ${{ inputs.publish_release == true }}
+    permissions:
+      contents: write
+    runs-on: windows-2022
+    timeout-minutes: 30
+    defaults:
+      run:
+        shell: pwsh
+    env:
+      DSH_TELEMETRY_DISABLED: '1'
+    steps:
+      - name: Checkout release sources
+        uses: actions/checkout@v7.0.1
+        with:
+          persist-credentials: false
+      - name: Download the accepted custom package
+        uses: actions/download-artifact@v8.0.1
+        with:
+          name: ${{ needs.package.outputs.custom-artifact }}
+          path: ${{ runner.temp }}/custom-core-release/custom
+      - name: Download the acceptance report
+        uses: actions/download-artifact@v8.0.1
+        with:
+          name: custom-core-acceptance-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/custom-core-release/report
+      - name: Validate the release tag and the accepted assets
+        env:
+          RELEASE_TAG: ${{ inputs.release_tag }}
+        run: |
+          $tag = $env:RELEASE_TAG
+          if ([string]::IsNullOrWhiteSpace($tag)) {
+            throw 'custom core release: release_tag is required when publish_release is true'
+          }
+          if ($tag -cnotmatch '^[A-Za-z0-9][A-Za-z0-9._+-]{0,63}$') {
+            throw "custom core release: release_tag ``$tag`` is not a safe tag; use letters, digits, dot, underscore, plus and hyphen, starting with a letter or digit"
+          }
+          $root = Join-Path $env:RUNNER_TEMP 'custom-core-release'
+          $installer = Join-Path $root "custom/${{ needs.package.outputs.custom-installer }}"
+          $sidecar = "$installer.sha256"
+          if (-not (Test-Path -LiteralPath $installer -PathType Leaf)) { throw "custom core release: the accepted installer is missing at $installer" }
+          if (-not (Test-Path -LiteralPath $sidecar -PathType Leaf)) { throw "custom core release: the accepted digest is missing at $sidecar" }
+          $expected = ((Get-Content -LiteralPath $sidecar -Raw).Trim() -split '\s+')[0]
+          $actual = (Get-FileHash -LiteralPath $installer -Algorithm SHA256).Hash.ToLowerInvariant()
+          if ($expected -ne $actual) { throw "custom core release: the installer SHA256 is $actual; expected $expected" }
+
+          $reportPath = Join-Path $root 'report/acceptance-report.json'
+          if (-not (Test-Path -LiteralPath $reportPath -PathType Leaf)) { throw "custom core release: the acceptance report is missing at $reportPath" }
+          $report = Get-Content -LiteralPath $reportPath -Raw | ConvertFrom-Json -Depth 16
+          if ($report.outcome -ne 'passed') { throw "custom core release: the acceptance report outcome is $($report.outcome); refusing to publish" }
+          if ($report.installers.custom.sha256 -ne $actual) {
+            throw "custom core release: the acceptance report accepted $($report.installers.custom.sha256), not this installer"
+          }
+          if (-not $report.data.identical) { throw 'custom core release: the acceptance report did not preserve the seeded configuration hashes' }
+
+          $notes = Join-Path $root 'release-notes.md'
+          $lines = @(
+            '未签名的 Windows x64 安装包：SmartScreen 会拦截首次运行，请点「更多信息 → 仍要运行」。',
+            '',
+            '本安装包沿用官方身份（com.deepseek.dsh / DeepSeek Harness），会覆盖同一目录内的同版本官方安装；',
+            '覆盖安装验收已确认原有会话、设置、凭据与已启用插件均被保留（数据哈希逐项一致）。',
+            '',
+            "安装包 SHA256：``$actual``",
+            "基线安装包 SHA256：``$($report.installers.baseline.sha256)``",
+            '验收事实：',
+            "- 覆盖安装后配置哈希一致：$($report.data.identical)",
+            "- 基线 own 工具可见且可执行：$($report.observation.baseline.execution.text)",
+            "- 定制 own 工具不可见且调用被拒绝：$($report.observation.custom.execution.code)",
+            "- 会话在覆盖安装后重新打开：$($report.observation.custom.session.mode)",
+            '',
+            '内置 core 行为只在覆盖安装验收通过的这一份安装包上生效。'
+          )
+          Set-Content -LiteralPath $notes -Value ($lines -join "`n") -Encoding utf8
+      - name: Create the prerelease
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ inputs.release_tag }}
+        run: |
+          $root = Join-Path $env:RUNNER_TEMP 'custom-core-release'
+          $installer = Join-Path $root "custom/${{ needs.package.outputs.custom-installer }}"
+          $notes = Join-Path $root 'release-notes.md'
+          if (-not (Test-Path -LiteralPath $notes -PathType Leaf)) { throw "custom core release: the release notes are missing at $notes" }
+          gh release create $env:RELEASE_TAG --target $env:GITHUB_SHA --prerelease --title "Custom core $env:RELEASE_TAG" --notes-file $notes $installer "$installer.sha256"
+          exit $LASTEXITCODE

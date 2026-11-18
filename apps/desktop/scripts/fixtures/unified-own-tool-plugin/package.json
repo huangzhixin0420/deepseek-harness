@@ -1,0 +1,8 @@
+{
+  "name": "dsh-fixture-unified-own-tool",
+  "private": true,
+  "version": "0.0.0",
+  "type": "module",
+  "description": "Acceptance fixture for the Windows custom-core overwrite install; never packaged with the product.",
+  "main": "index.mjs"
+}
