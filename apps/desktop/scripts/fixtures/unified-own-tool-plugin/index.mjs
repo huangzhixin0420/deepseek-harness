@@ -23,7 +23,7 @@ const INHERITED_TOOL = 'fixture_unified_inherited_tool'
 const OWN_TOOL_REPLY = 'fixture-own-tool-ran'
 
 export const name = 'fixture-unified-own-tool'
-export const inject = ['tools']
+export const inject = ['tools', 'agentLoop']
 
 /** Resolve how this load should behave from the acceptance runner's environment. */
 function runOptions() {
