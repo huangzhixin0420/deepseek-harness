@@ -37,7 +37,7 @@ on:
         default: ''
         required: false
       compression_level:
-        description: '安装器压缩等级：3 打包较快，7 压缩更强；覆盖本轮机器配置'
+        description: '安装器压缩等级：3 打包较快，7 压缩更强；覆盖本轮机器配置（signed）；unsigned 固定使用 3'
         type: choice
         options: ['3', '7']
         default: '3'

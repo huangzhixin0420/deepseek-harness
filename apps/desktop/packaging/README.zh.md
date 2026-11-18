@@ -71,7 +71,7 @@ production 发布使用产品版本本身，不传 `--build-version`。其上传
 
 macOS 和 Windows 未签名安装包使用与本地 Web 构建相同的本地化 **DSH 本地构建** 标签及版本/commit 徽标。签名安装包保留官方品牌，包括 test 部署和跳过公证的 macOS 构建。原生应用及安装器名称不变。
 
-本地 Windows 命令通过 `DSH_PACKAGING_CONFIG_DIR` 指定机器配置绝对目录，通过 `DSH_PACKAGING_PRESET` 选择 `test` 或 `production`。加载器读取 `presets/<preset>.env`；签名命令另读 `secrets/windows-signing.env`。相对证书和 SignTool 路径以声明它们的文件所在目录为基准。公开 preset 拒绝凭据，签名文件不能覆盖公开配置。配置缺失立即失败，不回退到 `.env.windows`；不选择 preset 的命令保留原 dotenv 行为。未签名和仅准备 preset 不读取签名文件。缓存维护也只读取公开 preset 配置。签名测试包还需现有下载 origin 和 release ID，但无需上传凭据。本地 preset 命令使用 `--build-version auto` 时仅按本地产物编号；Actions 使用运行编号和重试次数。
+本地 Windows 签名命令通过 `DSH_PACKAGING_CONFIG_DIR` 指定机器配置绝对目录，通过 `DSH_PACKAGING_PRESET` 选择 `test` 或 `production`。加载器读取 `presets/<preset>.env`；签名命令另读 `secrets/windows-signing.env`。相对证书和 SignTool 路径以声明它们的文件所在目录为基准。公开 preset 拒绝凭据，签名文件不能覆盖公开配置。配置缺失立即失败，不回退到 `.env.windows`；不选择 preset 的命令保留原 dotenv 行为。未签名构建不读取 preset 或 dotenv 打包设置，仅准备构建不读取签名文件。缓存维护也只读取公开 preset 配置。签名测试包还需现有下载 origin 和 release ID，但无需上传凭据。本地 preset 命令使用 `--build-version auto` 时仅按本地产物编号；Actions 使用运行编号和重试次数。
 
 两个手动打包工作流都接受 `test_release_id`。留空沿用机器 preset；非空值必须是 32 位小写十六进制字符串，且仅允许 test preset。加载器通过 `PACKAGE_TEST_RELEASE_ID` 应用覆盖值，不修改 preset 文件。同一平台连续升级测试需使用相同值。轮换默认值只影响后续构建：已安装客户端保留原更新地址，旧对象仍可访问，除非另行删除。随机前缀降低地址的可发现性，但不提供下载身份认证。
 
@@ -109,7 +109,7 @@ macOS 正式发布和本地未签名 DMG 都通过 [electron-builder 配置](../
 
 runner 的受监督启动和恢复见 [Windows runner 机器准备](../windows-signing/README.zh.md#machine-setup)。
 
-`Package Desktop · Windows · x64` [手动工作流](../../../.github/workflows/windows-package.yml) 选择专用 Windows x64 runner 标签 `dsh-win-package-trial`，并使用机器 preset `test` 或 `production`。选择 `signed`（默认）或 `unsigned`；签名模式复用现有 EV token 预检、签名缓存与失败 interlock，不发布或上传 release。`version_mode` 默认为 `default`（production 使用 `follow-dsh`，test 使用 `build-number`）；`build-number` 使用[发布版本](#release-versions)中的 CI 标识。`manual` 模式必须填写 `build_version`，其他模式忽略该字段；其值可以是源码产品版本，或扩展构建版本，例如产品 `0.2.1-alpha.1` 对应 `0.2.1-alpha.1.20261009.1`。版本前缀必须匹配所选源码；校验错误显示其当前示例。manifest 保持不变。
+`Package Desktop · Windows · x64` [手动工作流](../../../.github/workflows/windows-package.yml) 选择专用 Windows x64 runner 标签 `dsh-win-package-trial`，并使用机器 preset `test` 或 `production`。选择 `signed`（默认）或 `unsigned`；签名模式复用现有 EV token 预检、签名缓存与失败 interlock，未签名模式仅用 preset 选择源码与版本、打包使用本地默认设置，因此 `compression_level` 不生效，工作流不发布或上传 release。`version_mode` 默认为 `default`（production 使用 `follow-dsh`，test 使用 `build-number`）；`build-number` 使用[发布版本](#release-versions)中的 CI 标识。`manual` 模式必须填写 `build_version`，其他模式忽略该字段；其值可以是源码产品版本，或扩展构建版本，例如产品 `0.2.1-alpha.1` 对应 `0.2.1-alpha.1.20261009.1`。版本前缀必须匹配所选源码；校验错误显示其当前示例。manifest 保持不变。
 
 在 Actions 选择工作流、源码分支、preset、签名模式和版本，再点击 Run workflow。输入变更合并前，用 `gh workflow run windows-package.yml --ref <branch> -f source_ref=<branch> -f preset=test -f signing=unsigned -f version_mode=build-number` 测试已推送分支；合并后验证网页表单。它不监听 push 或 PR。日志和成功生成的 EXE 保留 14 天。依赖打包流程前检查日志和安装包；安装是独立操作。检出前，Node 删除 runner 专用源码目录，不跟随依赖 junction；工作流校验目标位置并拒绝链接祖先目录。不得指向日常开发目录。运行共享一个并发组，不取消正在进行的构建；最多保留一个待运行任务，新触发会替换它。仅在成功完成干净检出后上传诊断。机器配置位于 checkout 之外，不作为产物上传。
 
@@ -270,7 +270,7 @@ Windows 安装器在启动时和选定目标目录后检查应用是否正在运
 
 Windows 打包将 7-Zip 过滤器固定为 `BCJ`，以兼容内置的 NSIS 解码器。这样可以保留 x64 安装包中由依赖携带的 ARM64 二进制文件；自动 ARM64 过滤会生成该解码器无法解压的条目。
 
-Windows dotenv 或机器 preset 中的 `DSH_DESKTOP_WINDOWS_COMPRESSION_LEVEL` 选择 `0` 至 `9` 的安装包归档压缩等级。省略时，现有 `ELECTRON_BUILDER_COMPRESSION_LEVEL` 环境覆盖仍然生效，否则 test 和 production 均默认为 `3`。手动 Windows workflow 的 `compression_level` 下拉默认选 `3`，也提供 `7`，与 Mac ZIP 选项一致；它对本轮覆盖文件中的设置。直接本地打包保留显式机器配置。Mac ZIP workflow 覆盖值必须为 `3` 或 `7`；空值在 macOS 上也非法。任何已定义的 Mac ZIP workflow 覆盖值（包括空值）均拒绝用于 Windows；非空的 Windows workflow 覆盖值拒绝用于 macOS。较低等级以安装包体积换取打包时间；修改发布 preset 前应验证完整签名 workflow 和产物体积。
+Windows dotenv 或机器 preset 中的 `DSH_DESKTOP_WINDOWS_COMPRESSION_LEVEL` 选择 `0` 至 `9` 的安装包归档压缩等级。省略时，现有 `ELECTRON_BUILDER_COMPRESSION_LEVEL` 环境覆盖仍然生效，否则 test 和 production 均默认为 `3`。手动 Windows workflow 的 `compression_level` 下拉默认选 `3`，也提供 `7`，与 Mac ZIP 选项一致；它对本轮覆盖文件中的设置。未签名 Windows 安装包不读取这些设置，固定使用 `3`。直接本地打包保留显式机器配置。Mac ZIP workflow 覆盖值必须为 `3` 或 `7`；空值在 macOS 上也非法。任何已定义的 Mac ZIP workflow 覆盖值（包括空值）均拒绝用于 Windows；非空的 Windows workflow 覆盖值拒绝用于 macOS。较低等级以安装包体积换取打包时间；修改发布 preset 前应验证完整签名 workflow 和产物体积。
 
 NSIS 在安装阶段清理临时解压目录，完成后才显示完成页或自动启动应用。已安装的生产依赖保持为普通文件；启动时不会再次解压。安装仍会写入完整的应用目录树。
 
