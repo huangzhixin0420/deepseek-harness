@@ -37,6 +37,7 @@ param(
 
 $ErrorActionPreference = 'Stop'
 Set-StrictMode -Version Latest
+. (Join-Path $PSScriptRoot 'custom-core-acceptance-functions.ps1')
 
 $productName = 'DeepSeek Harness'
 $fixturePackageName = 'dsh-fixture-unified-own-tool'
@@ -62,6 +63,14 @@ $desktopSettingsFile = Join-Path $desktopJsonDir 'settings.json'
 $profileManifest = Join-Path $profileDir 'package.json'
 $profilePatch = Join-Path $profileDir 'cordis.patch.yml'
 $fixtureInstallDir = Join-Path $profileDir "node_modules\$fixturePackageName"
+# Product-owned state the seeding must really reach: credentials and the Desktop profile patch are where
+# harness settings live, and the Desktop JSON preferences sit under Electron userData.
+$requiredSeedFiles = @(
+    '.dsh/.credentials.yaml'
+    '.dsh/profiles/desktop/package.json'
+    '.dsh/profiles/desktop/cordis.patch.yml'
+    '%APPDATA%/@deepseek-ai/dsh-desktop/desktop/settings.json'
+)
 
 $state = [ordered]@{
     schemaVersion = 1
@@ -152,7 +161,6 @@ function Get-DataHashes {
         }
     }
     & $recordFile $credentialsFile '.dsh/.credentials.yaml'
-    & $recordFile (Join-Path $dshHome 'settings.json') '.dsh/settings.json'
     & $recordFile $profileManifest '.dsh/profiles/desktop/package.json'
     & $recordFile $profilePatch '.dsh/profiles/desktop/cordis.patch.yml'
     $sessionRoot = Join-Path $dshHome 'sessions'
@@ -305,25 +313,6 @@ function Write-DesktopPreference {
     $settings | ConvertTo-Json -Depth 4 | Set-Content -LiteralPath $desktopSettingsFile -Encoding utf8
 }
 
-function Get-ProfileBundles {
-    if (-not (Test-Path -LiteralPath $profileManifest -PathType Leaf)) { return @() }
-    try {
-        $manifest = Get-Content -LiteralPath $profileManifest -Raw | ConvertFrom-Json -Depth 16
-        return @($manifest.dsh.profile.bundles)
-    } catch [System.Management.Automation.PropertyNotFoundException] {
-        Write-Output "profile manifest $profileManifest carries no dsh.profile.bundles list"
-        return @()
-    }
-}
-
-function Get-JsonField {
-    param($Object, [string]$Name, $Default = $null)
-    if ($null -eq $Object) { return $Default }
-    $property = $Object.PSObject.Properties[$Name]
-    if ($null -eq $property) { return $Default }
-    return $property.Value
-}
-
 function Assert-OwnToolObservation {
     param($Observation, [string]$Label, [bool]$ExpectAdmitted)
     $prefix = "own-tool:$Label"
@@ -386,7 +375,7 @@ try {
     Write-CredentialsPlaceholder
     Write-DesktopPreference
     Add-Check 'fixture plugin enabled in the profile layer' ((Get-Content -LiteralPath $profilePatch -Raw) -match [regex]::Escape($fixturePackageName)) $profilePatch
-    $state.data.profileBundles = Get-ProfileBundles
+    $state.data.profileBundles = @(Get-ProfileBundles -Path $profileManifest)
     Add-Check 'profile keeps its ordered bundle list' (@($state.data.profileBundles).Count -gt 0) ($state.data.profileBundles -join ', ')
 
     Write-Output '== baseline observation: seed the Session and project the own tool'
@@ -415,6 +404,11 @@ try {
     Add-Check 'seeded data recorded' (@($state.data.before).Count -gt 0) "$(@($state.data.before).Count) entries"
     $seededSessionFiles = @($state.data.before | Where-Object { $_.path -like '.dsh/sessions/*' -and $_.exists })
     Add-Check 'seeded Session is durable' ($seededSessionFiles.Count -gt 0) "$($seededSessionFiles.Count) session file(s) under .dsh/sessions"
+    $seedGaps = @(Get-SeedGaps -Entries $state.data.before -Required $requiredSeedFiles)
+    Add-Check 'seeded files exist and are not empty before the comparison' ($seedGaps.Count -eq 0) ($seedGaps -join '; ')
+    if ($seedGaps.Count -gt 0) {
+        throw "custom core acceptance: the seeded configuration is incomplete; refusing to compare hashes: $($seedGaps -join '; ')"
+    }
 
     # Same silent form as the baseline: the same per-user identity into the same directory.
     $state.installs.customArguments = $installArguments
@@ -432,7 +426,9 @@ try {
     $state.data.identical = ($differences.Count -eq 0)
     Add-Check 'overwrite install preserved every recorded hash' $state.data.identical ($differences -join '; ')
     Add-Check 'fixture plugin still enabled after the overwrite' ((Get-Content -LiteralPath $profilePatch -Raw) -match [regex]::Escape($fixturePackageName)) $profilePatch
-    Add-Check 'profile bundle list unchanged' ((@(Get-ProfileBundles) -join ',') -eq (@($state.data.profileBundles) -join ',')) (@(Get-ProfileBundles) -join ', ')
+    $bundlesAfter = @(Get-ProfileBundles -Path $profileManifest)
+    $bundleDifferences = @(Compare-ProfileBundles -Before $state.data.profileBundles -After $bundlesAfter)
+    Add-Check 'profile bundle list unchanged' ($bundleDifferences.Count -eq 0 -and $bundlesAfter.Count -gt 0) ($bundleDifferences -join '; ')
 
     Write-Output '== custom observation: reopen the Session and project the own tool'
     $customApp = Start-DesktopApplication -Environment @{

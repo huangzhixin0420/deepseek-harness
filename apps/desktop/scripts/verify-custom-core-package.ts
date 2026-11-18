@@ -51,7 +51,6 @@ const DSH_PACKAGE = '@deepseek-ai/dsh'
 const CORE_PACKAGE = '@deepseek-ai/dsh-tools'
 const DESKTOP_PACKAGE = '@deepseek-ai/dsh-desktop'
 const REGISTRY_PACKAGE = 'dsh-tool-registry'
-const PACKAGE_SCOPE = '@deepseek-ai'
 const UPDATE_CONFIGURATION = 'app-update.yml'
 const SHA256SUMS_RECORD = /^([0-9a-f]{64}) {2}(\S+)$/u
 const APPLICATION_ARCHIVE = join('resources', 'app.asar')
@@ -194,8 +193,6 @@ function forbiddenApplicationEntry(path: string): string | undefined {
 interface ArchivedRuntime {
   /** `dsh/`-relative file paths that are not reported as forbidden content. */
   readonly files: Set<string>
-  /** Every archive-relative file path, including forbidden content. */
-  readonly entries: readonly string[]
   readonly descriptor: boolean
   readonly violations: readonly string[]
 }
@@ -203,7 +200,6 @@ interface ArchivedRuntime {
 /** Collect every archived `dsh/` file path and the entries rejected by name. */
 function archivedRuntime(header: AsarNode): ArchivedRuntime {
   const files = new Set<string>()
-  const entries: string[] = []
   const violations: string[] = []
   let descriptor = false
   const inspect = (node: AsarNode, path: string): void => {
@@ -215,7 +211,6 @@ function archivedRuntime(header: AsarNode): ArchivedRuntime {
       for (const [name, child] of Object.entries(node.files)) inspect(child, path === '' ? name : `${path}/${name}`)
       return
     }
-    entries.push(path)
     const forbidden = forbiddenArchiveEntry(path)
     if (forbidden !== undefined) {
       violations.push(forbidden)
@@ -228,32 +223,7 @@ function archivedRuntime(header: AsarNode): ArchivedRuntime {
     if (path.startsWith('dsh/')) files.add(path.slice('dsh/'.length))
   }
   inspect(header, '')
-  return { files, entries, descriptor, violations }
-}
-
-/**
- * Name every `@deepseek-ai/*` package the archive installs but the package set does not declare.
- * @param entries - Archive-relative file paths.
- * @param declared - Package names recorded by `desktop-packages.json`.
- * @returns First offending archive path per undeclared package name.
- */
-function undeclaredPackages(entries: readonly string[], declared: ReadonlySet<string>): Map<string, string> {
-  const packages = new Map<string, string>()
-  for (const path of entries) {
-    if (!path.startsWith('dsh/')) continue
-    const segments = path.split('/')
-    for (let index = 1; index < segments.length - 1; index += 1) {
-      if (segments[index] !== PACKAGE_SCOPE || segments[index - 1] !== 'node_modules') continue
-      const name = `${PACKAGE_SCOPE}/${segments[index + 1]!}`
-      if (!declared.has(name) && !packages.has(name)) packages.set(name, `app.asar/${path}`)
-    }
-  }
-  return packages
-}
-
-function belongsToUndeclared(path: string, undeclared: ReadonlyMap<string, string>): boolean {
-  for (const name of undeclared.keys()) if (path.includes(`node_modules/${name}/`)) return true
-  return false
+  return { files, descriptor, violations }
 }
 
 function applicationEntries(root: string): string[] {
@@ -304,13 +274,11 @@ export async function verifyCustomCorePackage(
 
   const recorded = new Set(descriptor.files.map(file => file.path))
   const archived = archivedRuntime(archive.header)
-  const undeclared = undeclaredPackages(archived.entries, new Set(records.map(record => record.name)))
   const violations = [...archived.violations]
-  for (const [name, path] of undeclared) violations.push(`undeclared package ${name} at ${path}`)
+  // The prepared runtime alone binds the plugin inputs: a package set covers the dsh family, while registry
+  // dependencies of the installed closure are legitimate, so file-set equality decides what the archive carries.
   for (const path of archived.files) {
-    if (!recorded.has(path) && !belongsToUndeclared(path, undeclared)) {
-      violations.push(`unrecorded runtime entry dsh/${path}`)
-    }
+    if (!recorded.has(path)) violations.push(`unrecorded runtime entry dsh/${path}`)
   }
   for (const path of recorded) if (!archived.files.has(path)) violations.push(`missing runtime entry dsh/${path}`)
   if (!archived.descriptor) violations.push(`missing runtime descriptor dsh/${DESKTOP_RUNTIME_FILE}`)

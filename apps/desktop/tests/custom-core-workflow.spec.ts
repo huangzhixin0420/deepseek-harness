@@ -1,5 +1,7 @@
 /** Static acceptance for the Windows custom-core build, installation acceptance, and prerelease pipeline. */
-import { readFileSync, statSync } from 'node:fs'
+import { spawnSync } from 'node:child_process'
+import { mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs'
+import { tmpdir } from 'node:os'
 import { join, resolve } from 'node:path'
 import yaml from 'js-yaml'
 import { expect, it } from 'vitest'
@@ -8,9 +10,12 @@ const APP_ROOT = join(import.meta.dirname, '..')
 const REPOSITORY = resolve(APP_ROOT, '..', '..')
 const WORKFLOW_PATH = join(REPOSITORY, '.github', 'workflows', 'desktop-custom-core-windows.yml')
 const ACCEPTANCE_SCRIPT = join(APP_ROOT, 'scripts', 'accept-custom-core-windows.ps1')
+const DISK_GUARD = join(APP_ROOT, 'scripts', 'assert-custom-core-disk-space.ps1')
+const ACCEPTANCE_FUNCTIONS = join(APP_ROOT, 'scripts', 'custom-core-acceptance-functions.ps1')
 const FIXTURE_ROOT = join(APP_ROOT, 'scripts', 'fixtures', 'unified-own-tool-plugin')
 const FIXTURE_MANIFEST = join(FIXTURE_ROOT, 'package.json')
 const FIXTURE_ENTRY = join(FIXTURE_ROOT, 'index.mjs')
+const hasPwsh = spawnSync('pwsh', ['-NoLogo', '-NoProfile', '-NonInteractive', '-Command', '$true'], { encoding: 'utf8' }).status === 0
 
 interface WorkflowStep {
   readonly id?: string
@@ -237,4 +242,215 @@ it('isolates the fixture from the product package', () => {
   const builder = readFileSync(join(APP_ROOT, 'scripts', 'electron-builder-config.mjs'), 'utf8')
   expect(builder).not.toContain('unified-own-tool-plugin')
   expect(readFileSync(WORKFLOW_PATH, 'utf8')).not.toContain('apps/desktop/scripts/fixtures')
+})
+
+/** Position of one named package-job step. */
+function packageStep(name: string): number {
+  const index = packageJob.steps.findIndex(step => step.name === name)
+  expect(index).toBeGreaterThanOrEqual(0)
+  return index
+}
+
+it('records the pnpm version and lockfile of each checkout before it installs', () => {
+  const installs = packageJob.steps.filter(step => (step.name ?? '').startsWith('Install locked dependencies'))
+  expect(installs.map(step => step['working-directory'])).toEqual(['baseline', 'custom'])
+  for (const step of installs) {
+    const script = step.run ?? ''
+    const install = script.indexOf('pnpm install --frozen-lockfile')
+    expect(script).toContain('pnpm --version')
+    expect(script).toContain('lockfileVersion')
+    expect(script.indexOf('pnpm --version')).toBeLessThan(install)
+    expect(script.indexOf('lockfileVersion')).toBeLessThan(install)
+  }
+  // Both checkouts pin pnpm 11.28.5 with lockfileVersion 9.0, so one pinned pnpm serves both and no
+  // per-checkout corepack shim may switch versions mid-run.
+  expect(packageJob.steps.filter(step => step.uses?.startsWith('pnpm/action-setup@'))).toHaveLength(1)
+  expect(jobScript(packageJob)).not.toContain('corepack')
+})
+
+it('fails closed on free disk space before the first install and after the baseline cleanup', () => {
+  const guardSteps = packageJob.steps.filter(step => (step.run ?? '').includes('assert-custom-core-disk-space.ps1'))
+  expect(guardSteps.map(step => step.name)).toEqual([
+    'Guard free disk space before the baseline install',
+    'Guard free disk space after the baseline cleanup',
+  ])
+  const firstGuard = packageStep('Guard free disk space before the baseline install')
+  const secondGuard = packageStep('Guard free disk space after the baseline cleanup')
+  expect(firstGuard).toBeLessThan(packageStep('Install locked dependencies for the baseline'))
+  expect(secondGuard).toBeGreaterThan(packageStep('Free baseline build intermediates'))
+  expect(secondGuard).toBeLessThan(packageStep('Build custom installer'))
+  for (const step of guardSteps) {
+    expect(step.run).toContain('-Path $env:GITHUB_WORKSPACE, $env:RUNNER_TEMP')
+    // A missing guard script must not chain into `exit $null` and pass silently.
+    expect(step.run).toContain('if (-not (Test-Path -LiteralPath $guard -PathType Leaf)) { throw')
+  }
+
+  const guard = readFileSync(DISK_GUARD, 'utf8')
+  expect(guard).toContain('[long]$MinimumBytes = 16106127360')
+  expect(guard).toContain('exit 1')
+})
+
+it.skipIf(!hasPwsh)('reports free space and fails when a volume cannot hold the minimum', () => {
+  const root = mkdtempSync(join(tmpdir(), 'custom-core-disk-'))
+  try {
+    const run = (minimum: string) => spawnSync('pwsh', [
+      '-NoLogo', '-NoProfile', '-NonInteractive', '-File', DISK_GUARD,
+      '-Stage', 'fixture stage', '-Path', root, '-MinimumBytes', minimum,
+    ], { encoding: 'utf8', timeout: 60_000 })
+    const enough = run('1')
+    expect(enough.status).toBe(0)
+    expect(enough.stdout).toContain('fixture stage')
+    expect(enough.stdout).toMatch(/: \d+ bytes free \(minimum 1\) on /u)
+
+    const short = run('2000000000000')
+    expect(short.status).toBe(1)
+    expect(short.stderr).toContain('need at least 2000000000000')
+  } finally {
+    rmSync(root, { recursive: true, force: true })
+  }
+})
+
+it('keeps both installers and the audit report outside the baseline cleanup', () => {
+  const cleanup = packageJob.steps.find(step => step.name === 'Free baseline build intermediates')
+  expect(cleanup).toBeDefined()
+  const script = cleanup!.run ?? ''
+  // The baseline installer sits beside `win-unpacked` and the audit report lives under the runner temp; the
+  // acceptance and release jobs consume both after this step.
+  expect(script).toContain("'unsigned-artifacts/win-unpacked'")
+  expect(script).not.toContain("'unsigned-artifacts'")
+  expect(script).not.toContain('.exe')
+  expect(script).not.toContain('desktop-package-audit.json')
+  expect(script).not.toContain('RUNNER_TEMP')
+})
+
+const ACCEPTANCE_PROBE = `param([string]$Functions, [string]$Root)
+$ErrorActionPreference = 'Stop'
+Set-StrictMode -Version Latest
+. $Functions
+function Write-Manifest([string]$Name, [string]$Body) {
+    $path = Join-Path $Root $Name
+    Set-Content -LiteralPath $path -Value $Body -Encoding utf8 -NoNewline
+    return $path
+}
+$absent = Join-Path $Root 'absent.json'
+$noList = Write-Manifest 'no-list.json' '{ "dsh": { "profile": {} } }'
+$nullList = Write-Manifest 'null-list.json' '{ "dsh": { "profile": { "bundles": null } } }'
+$emptyString = Write-Manifest 'empty-string.json' '{ "dsh": { "profile": { "bundles": "" } } }'
+$emptyList = Write-Manifest 'empty-list.json' '{ "dsh": { "profile": { "bundles": [] } } }'
+$two = Write-Manifest 'two.json' '{ "dsh": { "profile": { "bundles": [ "alpha", "beta" ] } } }'
+$blankEntry = Write-Manifest 'blank-entry.json' '{ "dsh": { "profile": { "bundles": [ "", "alpha" ] } } }'
+$entries = @(
+    [pscustomobject]@{ path = '.dsh/.credentials.yaml'; exists = $true; bytes = 12 },
+    [pscustomobject]@{ path = '.dsh/profiles/desktop/cordis.patch.yml'; exists = $false; bytes = 0 },
+    [pscustomobject]@{ path = 'desktop/settings.json'; exists = $true; bytes = 0 }
+)
+$required = @(
+    '.dsh/.credentials.yaml'
+    '.dsh/profiles/desktop/cordis.patch.yml'
+    'desktop/settings.json'
+    'desktop/keybindings.json'
+)
+$recorded = @(
+    [ordered]@{ path = '.dsh/.credentials.yaml'; exists = $true; bytes = 12 },
+    [ordered]@{ path = '.dsh/profiles/desktop/cordis.patch.yml'; exists = $true; bytes = 34 }
+)
+[ordered]@{
+    missingCount = @(Get-ProfileBundles -Path $absent).Count
+    noListCount = @(Get-ProfileBundles -Path $noList).Count
+    nullListCount = @(Get-ProfileBundles -Path $nullList).Count
+    emptyStringCount = @(Get-ProfileBundles -Path $emptyString).Count
+    emptyListCount = @(Get-ProfileBundles -Path $emptyList).Count
+    two = (@(Get-ProfileBundles -Path $two) -join '|')
+    blankEntry = (@(Get-ProfileBundles -Path $blankEntry) -join '|')
+    unchanged = (@(Compare-ProfileBundles -Before @('alpha', 'beta') -After @('alpha', 'beta')) -join '|')
+    reordered = (@(Compare-ProfileBundles -Before @('alpha', 'beta') -After @('beta', 'alpha')) -join '|')
+    shortened = (@(Compare-ProfileBundles -Before @('alpha', 'beta') -After @('alpha')) -join '|')
+    emptied = (@(Compare-ProfileBundles -Before @('alpha') -After @()) -join '|')
+    gaps = (@(Get-SeedGaps -Entries $entries -Required $required) -join '|')
+    recordedGaps = (@(Get-SeedGaps -Entries $recorded -Required @('.dsh/.credentials.yaml')) -join '|')
+} | ConvertTo-Json -Depth 6 -Compress
+`
+
+it.skipIf(!hasPwsh)('normalizes the profile bundle list and rejects a snapshot without the seeded files', () => {
+  const root = mkdtempSync(join(tmpdir(), 'custom-core-acceptance-'))
+  try {
+    const probe = join(root, 'probe.ps1')
+    writeFileSync(probe, ACCEPTANCE_PROBE)
+    const run = spawnSync('pwsh', ['-NoLogo', '-NoProfile', '-NonInteractive', '-File', probe, ACCEPTANCE_FUNCTIONS, root], {
+      encoding: 'utf8', timeout: 60_000,
+    })
+    expect(run.stderr).toBe('')
+    expect(run.status).toBe(0)
+    expect(JSON.parse(run.stdout)).toEqual({
+      missingCount: 0,
+      noListCount: 0,
+      nullListCount: 0,
+      emptyStringCount: 0,
+      emptyListCount: 0,
+      two: 'alpha|beta',
+      blankEntry: 'alpha',
+      unchanged: '',
+      reordered: 'index 0: alpha -> beta|index 1: beta -> alpha',
+      shortened: 'count 2 -> 1',
+      emptied: 'count 1 -> 0',
+      gaps: [
+        'not present on disk: .dsh/profiles/desktop/cordis.patch.yml',
+        'empty on disk: desktop/settings.json',
+        'missing from the hash snapshot: desktop/keybindings.json',
+      ].join('|'),
+      recordedGaps: '',
+    })
+  } finally {
+    rmSync(root, { recursive: true, force: true })
+  }
+})
+
+it.skipIf(!hasPwsh)('parses the acceptance script, its helpers, and the disk guard', () => {
+  const root = mkdtempSync(join(tmpdir(), 'custom-core-parse-'))
+  try {
+    const probe = join(root, 'parse.ps1')
+    writeFileSync(probe, `$ErrorActionPreference = 'Stop'
+$failed = $false
+foreach ($file in $args) {
+    $tokens = $null
+    $problems = $null
+    [void][System.Management.Automation.Language.Parser]::ParseFile($file, [ref]$tokens, [ref]$problems)
+    foreach ($problem in @($problems)) {
+        Write-Output ('{0}: {1}' -f $file, $problem.Message)
+        $failed = $true
+    }
+}
+if ($failed) { exit 1 }
+Write-Output 'parsed'
+`)
+    const run = spawnSync('pwsh', [
+      '-NoLogo', '-NoProfile', '-NonInteractive', '-File', probe, ACCEPTANCE_SCRIPT, ACCEPTANCE_FUNCTIONS, DISK_GUARD,
+    ], { encoding: 'utf8', timeout: 60_000 })
+    expect(run.stdout.trim()).toBe('parsed')
+    expect(run.status).toBe(0)
+  } finally {
+    rmSync(root, { recursive: true, force: true })
+  }
+})
+
+it('asserts the seeded state on disk before it records the comparison snapshot', () => {
+  const script = readFileSync(ACCEPTANCE_SCRIPT, 'utf8')
+  expect(script).toContain(". (Join-Path $PSScriptRoot 'custom-core-acceptance-functions.ps1')")
+  expect(script).toContain('$requiredSeedFiles = @(')
+  for (const path of [
+    '.dsh/.credentials.yaml',
+    '.dsh/profiles/desktop/package.json',
+    '.dsh/profiles/desktop/cordis.patch.yml',
+    '%APPDATA%/@deepseek-ai/dsh-desktop/desktop/settings.json',
+  ]) {
+    expect(script).toContain(path)
+  }
+  // `~/.dsh/settings.json` is not a product path: harness settings live in the profile patch.
+  expect(script).not.toContain('.dsh/settings.json')
+  expect(script).toContain('$seedGaps = @(Get-SeedGaps -Entries $state.data.before -Required $requiredSeedFiles)')
+  expect(script.indexOf('$seedGaps = @(Get-SeedGaps'))
+    .toBeLessThan(script.indexOf('== snapshot B'))
+  expect(script).toContain('$state.data.profileBundles = @(Get-ProfileBundles -Path $profileManifest)')
+  expect(script).toContain('@(Compare-ProfileBundles -Before ')
+  expect(script).not.toContain('function Get-ProfileBundles')
 })

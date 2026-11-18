@@ -5,7 +5,10 @@ import { fileURLToPath } from 'node:url'
 import { expect, it, vi } from 'vitest'
 
 const state = vi.hoisted(() => ({ root: '', directory: '' }))
-vi.mock('../scripts/desktop-package-environment.mjs', () => ({
+// Only the release environment and its validation are replaced; the local environments stay real so a
+// newly exported one cannot silently break this failure test.
+vi.mock('../scripts/desktop-package-environment.mjs', async importOriginal => ({
+  ...await importOriginal<typeof import('../scripts/desktop-package-environment.mjs')>(),
   loadDesktopPackageEnvironment: () => ({ DSH_DESKTOP_WINDOWS_TOKEN_PIN: 'credential-sentinel' }),
   validateDesktopPackageEnvironment: () => {},
 }))
