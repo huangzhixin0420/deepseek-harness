@@ -1,9 +1,9 @@
 /**
  * Prepare the official Desktop checkout as the custom-core baseline build source.
  *
- * The baseline must stay official `0.2.2-rc.3` source, so this script copies only the three
- * packaging scripts from the packaging patch commit and reverts the one module relocation those
- * scripts carry (`desktop-auto-update-environment` moved to the publisher app after the release),
+ * The baseline must stay official `0.2.2-rc.3` source, so this script copies only the four
+ * packaging files from the packaging patch commit and reverts the one module relocation those
+ * files carry (`desktop-auto-update-environment` moved to the publisher app after the release),
  * which the official tree cannot resolve. The revert is allowed only when the relocated module is
  * the official file byte for byte. Everything else in the checkout stays official, and the command
  * line pins the official commit with no override.
@@ -17,9 +17,10 @@ import { parseArgs } from 'node:util'
 /** Official `dsh-v0.2.2-rc.3` source commit the baseline must be prepared from. */
 export const OFFICIAL_SOURCE_COMMIT = '38a6a5c965aa99ab525161efb7cc5cf1fe62fced'
 
-/** Packaging scripts the baseline takes from the packaging patch commit, in manifest order. */
+/** Packaging files the baseline takes from the packaging patch commit, in manifest order. */
 export const BASELINE_PACKAGING_FILES = [
   'apps/desktop/scripts/desktop-package-environment.mjs',
+  'apps/desktop/scripts/desktop-package-environment.d.mts',
   'apps/desktop/scripts/electron-builder-config.mjs',
   'apps/desktop/scripts/package-target.ts',
 ]

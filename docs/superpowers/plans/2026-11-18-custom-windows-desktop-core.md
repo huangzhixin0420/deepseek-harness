@@ -100,9 +100,9 @@
 **Interfaces:**
 - Consumes: Task 1 的完整提交 SHA；Task 2 的替换与受控输入；Task 3 的审计 CLI。
 - Produces: workflow 输入 `publish_release: boolean=false`、`release_tag: string=''`；job `package` 输出定制与基线 Artifact 名及定制安装包文件名。
-- Produces: `prepare-custom-core-baseline.mjs --source <官方tag checkout> --packaging-commit <SHA>` 校验官方提交为 `38a6a5c965aa99ab525161efb7cc5cf1fe62fced`，只检出 Task 1 的三个打包脚本到基线，并记录官方 SHA、补丁 SHA 和改动文件清单。
+- Produces: `prepare-custom-core-baseline.mjs --source <官方tag checkout> --packaging-commit <SHA>` 校验官方提交为 `38a6a5c965aa99ab525161efb7cc5cf1fe62fced`，只检出 Task 1 的四个打包文件（含类型声明）到基线，并记录官方 SHA、补丁 SHA 和改动文件清单。
 
-- [ ] **Step 1: 写基线准备测试** 在临时 Git 仓库模拟官方提交与打包补丁，断言只更新 `package-target.ts`、`desktop-package-environment.mjs`、`electron-builder-config.mjs`，core 源保持官方；错误 SHA、额外 diff、脏工作树均失败。
+- [ ] **Step 1: 写基线准备测试** 在临时 Git 仓库模拟官方提交与打包补丁，断言只更新 `package-target.ts`、`desktop-package-environment.mjs`、`desktop-package-environment.d.mts`、`electron-builder-config.mjs`，core 源保持官方；错误 SHA、额外 diff、脏工作树均失败。
 - [ ] **Step 2: 运行 RED 并实现** Run: `pnpm exec vitest run apps/desktop/tests/prepare-custom-core-baseline.spec.ts` Expected: 先失败；实现后重跑通过。
 - [ ] **Step 3: 编写 package job** 全部使用 `windows-2022`、原生 `pwsh`、`actions/checkout@v7.0.1`、`actions/setup-node@v7.0.0` Node 24、`pnpm/action-setup@v5.0.0`，`permissions: contents: read`，并发组 `desktop-custom-core-windows` 且不取消进行中的运行。先 checkout 官方 tag 到 `baseline` 并运行基线准备脚本，再分别 `pnpm install --frozen-lockfile` 和 `pnpm run package:desktop:win:x64:unsigned` 构建 baseline/custom。
 - [ ] **Step 4: 接入审计与 Artifact** 对定制包执行 Task 3 CLI，收集两份 NSIS 与 SHA256；`actions/upload-artifact@v7.0.1` 使用 `if-no-files-found: error`、固定 7 天保留。Artifact 只含验收所需安装包、摘要和审计报告，不含打包中间目录。
