@@ -107,9 +107,11 @@ function paths(matches: readonly string[]): string {
 /**
  * Swap the official packed core for the controlled tarball, stopping the build on any mismatch.
  *
- * Every precondition fails with an `Error` naming `custom core`, the absolute path, and the count
- * that disagreed. The packed directory is searched recursively so a stale nested copy of either
- * tarball also fails instead of silently surviving into the package set.
+ * Every guard fails with an `Error` naming `custom core` and the absolute path at fault, plus the
+ * count that disagreed. The controlled tarball is written and renamed into place before the official
+ * one is removed, so a failed write leaves the packed inputs unchanged. The packed directory is
+ * searched recursively so a stale nested copy of either tarball also fails instead of silently
+ * surviving into the package set.
  * @param request - Packed tarball directory and the controlled source with its digest sidecar.
  * @returns Digests of the source and the written tarball, plus the written tarball's absolute path.
  */
@@ -132,11 +134,12 @@ export function replaceWindowsCustomCore(request: WindowsCustomCoreRequest): Win
   }
 
   const destination = join(packedDsh, PACKED_CUSTOM_TARBALL)
-  rmSync(officialPath, { force: true })
   const temporary = `${destination}.tmp`
   try {
     writeFileSync(temporary, bytes)
     renameSync(temporary, destination)
+  } catch (error) {
+    throw new Error(`custom core: cannot write ${destination}: ${errorText(error)}`)
   } finally {
     if (existsSync(temporary)) unlinkSync(temporary)
   }
@@ -154,6 +157,7 @@ export function replaceWindowsCustomCore(request: WindowsCustomCoreRequest): Win
     throw new Error(`custom core: ${destination} sha256 is ${destinationSha256}; expected ${expected} from ${checksumFile}`)
   }
 
+  rmSync(officialPath, { force: true })
   const remaining = findCoreTarballs(packedDsh).official
   if (remaining.length !== 0) {
     throw new Error(`custom core: ${packedDsh} still contains ${remaining.length} official ${OFFICIAL_TARBALL} tarball(s) after replacement; expected none${paths(remaining)}`)

@@ -241,6 +241,31 @@ it('refuses a replacement that leaves the official tarball behind', () => {
   expect(error.message).toContain(`still contains 1 official ${OFFICIAL} tarball(s) after replacement; expected none`)
 })
 
+it('reports a failed write as a custom core failure that keeps the official tarball', () => {
+  const target = project()
+  const official = officialTarball(target.packedDsh)
+  vi.mocked(writeFileSync).mockImplementationOnce(() => {
+    throw new Error('ENOSPC: no space left on device')
+  })
+
+  const error = refusal(target)
+  expect(error.message).toBe(`custom core: cannot write ${join(target.packedDsh, CUSTOM)}: ENOSPC: no space left on device`)
+  expect(readFileSync(official)).toEqual(Buffer.from('official core'))
+})
+
+it('reports a failed rename as a custom core failure that keeps the official tarball', () => {
+  const target = project()
+  const official = officialTarball(target.packedDsh)
+  vi.mocked(renameSync).mockImplementationOnce(() => {
+    throw new Error('EPERM: operation not permitted')
+  })
+
+  const error = refusal(target)
+  expect(error.message).toBe(`custom core: cannot write ${join(target.packedDsh, CUSTOM)}: EPERM: operation not permitted`)
+  expect(readFileSync(official)).toEqual(Buffer.from('official core'))
+  expect(readdirSync(target.packedDsh)).toEqual([OFFICIAL])
+})
+
 it('refuses a written tarball whose digest disagrees with the sidecar', async () => {
   const target = project()
   officialTarball(target.packedDsh)
