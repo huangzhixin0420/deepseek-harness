@@ -6,6 +6,7 @@ import { basename, dirname, isAbsolute, join, resolve, sep } from 'node:path'
 import { parseArgs } from 'node:util'
 import { readAsar, type Node as AsarNode } from 'app-builder-lib/out/asar/asar.js'
 import { CUSTOM_CORE_DIRECTORY, CUSTOM_CORE_TARBALL } from './replace-windows-custom-core.ts'
+import { verifyRuntimeArchive } from './verify-runtime-archive.ts'
 import {
   DESKTOP_HOST_PACKAGE,
   parseDesktopCorePackageSet,
@@ -50,7 +51,9 @@ const DSH_PACKAGE = '@deepseek-ai/dsh'
 const CORE_PACKAGE = '@deepseek-ai/dsh-tools'
 const DESKTOP_PACKAGE = '@deepseek-ai/dsh-desktop'
 const REGISTRY_PACKAGE = 'dsh-tool-registry'
+const PACKAGE_SCOPE = '@deepseek-ai'
 const UPDATE_CONFIGURATION = 'app-update.yml'
+const SHA256SUMS_RECORD = /^([0-9a-f]{64}) {2}(\S+)$/u
 const APPLICATION_ARCHIVE = join('resources', 'app.asar')
 const ARCHIVE_MANIFEST = 'package.json'
 const ARCHIVE_CORE_MANIFEST = join('dsh', 'node_modules', CORE_PACKAGE, 'package.json')
@@ -103,17 +106,58 @@ function customCoreRecord(records: readonly DesktopCorePackageRecord[]): Desktop
   return record
 }
 
-function checkControlledCore(record: DesktopCorePackageRecord): { readonly bytes: number; readonly integrity: string } {
-  const path = join(APP_ROOT, 'resources', CUSTOM_CORE_DIRECTORY, CUSTOM_CORE_TARBALL)
-  const body = readBytes(path)
+/** Controlled core tarball and the `sha256sum` record committed beside it. */
+export interface ControlledCoreSource {
+  /** Absolute path of the controlled tarball. */
+  readonly tarball: string
+  /** Absolute path of the two-field `sha256sum` record naming that tarball. */
+  readonly checksum: string
+}
+
+/** Digests of one verified controlled core tarball. */
+export interface ControlledCoreDigests {
+  readonly bytes: number
+  /** npm integrity of the tarball bytes. */
+  readonly integrity: string
+  /** SHA256 the committed sidecar names. */
+  readonly sha256: string
+}
+
+/**
+ * Verify one controlled tarball against its committed `sha256sum` record and the package-set record.
+ * @param record - Package-set record that must describe the same bytes.
+ * @param source - Controlled tarball and the sidecar that pins its digest.
+ * @returns Verified byte count, npm integrity, and tarball SHA256.
+ * @throws Error naming the expected and actual digests; neither input is modified.
+ */
+export function verifyControlledCore(
+  record: DesktopCorePackageRecord,
+  source: ControlledCoreSource,
+): ControlledCoreDigests {
+  const body = readBytes(source.tarball)
+  const line = readBytes(source.checksum).toString('utf8').replace(/\r?\n$/u, '')
+  const match = SHA256SUMS_RECORD.exec(line)
+  if (match === null || match[2] !== basename(source.tarball)) {
+    throw new Error(`${ERROR_PREFIX} ${source.checksum} is not a sha256sum record;`
+      + ` expected "<64 hex>  ${basename(source.tarball)}"`)
+  }
+  const sha = createHash('sha256').update(body).digest('hex')
+  if (sha !== match[1]) {
+    throw new Error(`${ERROR_PREFIX} ${source.tarball} sha256 is ${sha}; expected ${match[1]} from ${source.checksum}`)
+  }
   const integrity = `sha512-${createHash('sha512').update(body).digest('base64')}`
   if (record.bytes !== body.byteLength) {
-    throw new Error(`${ERROR_PREFIX} dsh-tools tarball is ${record.bytes} bytes; expected ${body.byteLength} from ${path}`)
+    throw new Error(`${ERROR_PREFIX} dsh-tools tarball is ${record.bytes} bytes; expected ${body.byteLength} from ${source.tarball}`)
   }
   if (record.integrity !== integrity) {
-    throw new Error(`${ERROR_PREFIX} dsh-tools integrity is ${record.integrity}; expected ${integrity} from ${path}`)
+    throw new Error(`${ERROR_PREFIX} dsh-tools integrity is ${record.integrity}; expected ${integrity} from ${source.tarball}`)
   }
-  return { bytes: body.byteLength, integrity }
+  return { bytes: body.byteLength, integrity, sha256: sha }
+}
+
+function repositoryControlledCore(): ControlledCoreSource {
+  const tarball = join(APP_ROOT, 'resources', CUSTOM_CORE_DIRECTORY, CUSTOM_CORE_TARBALL)
+  return { tarball, checksum: `${tarball}.sha256` }
 }
 
 function checkSharedCore(descriptor: DesktopRuntimeDescriptor): void {
@@ -147,12 +191,19 @@ function forbiddenApplicationEntry(path: string): string | undefined {
   return undefined
 }
 
-/** Collect every archived `dsh/` file path, excluding entries reported as forbidden. */
-function archivedRuntime(
-  header: AsarNode,
-  recorded: ReadonlySet<string>,
-): { readonly files: Set<string>; readonly descriptor: boolean; readonly violations: string[] } {
+interface ArchivedRuntime {
+  /** `dsh/`-relative file paths that are not reported as forbidden content. */
+  readonly files: Set<string>
+  /** Every archive-relative file path, including forbidden content. */
+  readonly entries: readonly string[]
+  readonly descriptor: boolean
+  readonly violations: readonly string[]
+}
+
+/** Collect every archived `dsh/` file path and the entries rejected by name. */
+function archivedRuntime(header: AsarNode): ArchivedRuntime {
   const files = new Set<string>()
+  const entries: string[] = []
   const violations: string[] = []
   let descriptor = false
   const inspect = (node: AsarNode, path: string): void => {
@@ -164,6 +215,7 @@ function archivedRuntime(
       for (const [name, child] of Object.entries(node.files)) inspect(child, path === '' ? name : `${path}/${name}`)
       return
     }
+    entries.push(path)
     const forbidden = forbiddenArchiveEntry(path)
     if (forbidden !== undefined) {
       violations.push(forbidden)
@@ -176,10 +228,32 @@ function archivedRuntime(
     if (path.startsWith('dsh/')) files.add(path.slice('dsh/'.length))
   }
   inspect(header, '')
-  for (const path of files) if (!recorded.has(path)) violations.push(`unrecorded runtime entry dsh/${path}`)
-  for (const path of recorded) if (!files.has(path)) violations.push(`missing runtime entry dsh/${path}`)
-  if (!descriptor) violations.push(`missing runtime descriptor dsh/${DESKTOP_RUNTIME_FILE}`)
-  return { files, descriptor, violations }
+  return { files, entries, descriptor, violations }
+}
+
+/**
+ * Name every `@deepseek-ai/*` package the archive installs but the package set does not declare.
+ * @param entries - Archive-relative file paths.
+ * @param declared - Package names recorded by `desktop-packages.json`.
+ * @returns First offending archive path per undeclared package name.
+ */
+function undeclaredPackages(entries: readonly string[], declared: ReadonlySet<string>): Map<string, string> {
+  const packages = new Map<string, string>()
+  for (const path of entries) {
+    if (!path.startsWith('dsh/')) continue
+    const segments = path.split('/')
+    for (let index = 1; index < segments.length - 1; index += 1) {
+      if (segments[index] !== PACKAGE_SCOPE || segments[index - 1] !== 'node_modules') continue
+      const name = `${PACKAGE_SCOPE}/${segments[index + 1]!}`
+      if (!declared.has(name) && !packages.has(name)) packages.set(name, `app.asar/${path}`)
+    }
+  }
+  return packages
+}
+
+function belongsToUndeclared(path: string, undeclared: ReadonlyMap<string, string>): boolean {
+  for (const name of undeclared.keys()) if (path.includes(`node_modules/${name}/`)) return true
+  return false
 }
 
 function applicationEntries(root: string): string[] {
@@ -204,7 +278,7 @@ export async function verifyCustomCorePackage(
   }
   const records = readPackageRecords(options.packages)
   const coreRecord = customCoreRecord(records)
-  const controlled = checkControlledCore(coreRecord)
+  const controlled = verifyControlledCore(coreRecord, repositoryControlledCore())
   const descriptor = await verifyDesktopRuntime(
     dirname(options.runtime), RELEASE_VERSION, { platform: 'win32', arch: 'x64' })
   checkSharedCore(descriptor)
@@ -229,8 +303,17 @@ export async function verifyCustomCorePackage(
   }
 
   const recorded = new Set(descriptor.files.map(file => file.path))
-  const archived = archivedRuntime(archive.header, recorded)
+  const archived = archivedRuntime(archive.header)
+  const undeclared = undeclaredPackages(archived.entries, new Set(records.map(record => record.name)))
   const violations = [...archived.violations]
+  for (const [name, path] of undeclared) violations.push(`undeclared package ${name} at ${path}`)
+  for (const path of archived.files) {
+    if (!recorded.has(path) && !belongsToUndeclared(path, undeclared)) {
+      violations.push(`unrecorded runtime entry dsh/${path}`)
+    }
+  }
+  for (const path of recorded) if (!archived.files.has(path)) violations.push(`missing runtime entry dsh/${path}`)
+  if (!archived.descriptor) violations.push(`missing runtime descriptor dsh/${DESKTOP_RUNTIME_FILE}`)
   for (const entry of applicationEntries(options.app)) {
     const forbidden = forbiddenApplicationEntry(entry)
     if (forbidden !== undefined) violations.push(forbidden)
@@ -238,6 +321,11 @@ export async function verifyCustomCorePackage(
   if (violations.length > 0) {
     violations.sort()
     throw new Error(`${ERROR_PREFIX} ${violations.length} violations in ${archivePath}:\n  - ${violations.join('\n  - ')}`)
+  }
+  try {
+    await verifyRuntimeArchive(archivePath, descriptor)
+  } catch (error) {
+    throw new Error(`${ERROR_PREFIX} ${errorText(error)}`)
   }
   return {
     release: RELEASE_VERSION,

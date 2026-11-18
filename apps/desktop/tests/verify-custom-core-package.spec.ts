@@ -8,13 +8,14 @@ import { afterEach, expect, it } from 'vitest'
 import { DESKTOP_HOST_PROTOCOL_VERSION } from '../src/host-protocol.ts'
 import { writeDesktopRuntime } from '../src/runtime-tree.ts'
 import { CUSTOM_CORE_DIRECTORY, CUSTOM_CORE_TARBALL } from '../scripts/replace-windows-custom-core.ts'
-import { verifyCustomCorePackage } from '../scripts/verify-custom-core-package.ts'
+import { verifyControlledCore, verifyCustomCorePackage } from '../scripts/verify-custom-core-package.ts'
 import { writePackage } from './runtime-fixture.ts'
 
 const require = createRequire(import.meta.url)
 const builderRequire = createRequire(require.resolve('app-builder-lib/package.json'))
-const { createPackage } = builderRequire('@electron/asar') as {
+const { createPackage, createPackageWithOptions } = builderRequire('@electron/asar') as {
   createPackage: (source: string, destination: string) => Promise<void>
+  createPackageWithOptions: (source: string, destination: string, options: { unpack?: string }) => Promise<void>
 }
 
 const APP_ROOT = join(import.meta.dirname, '..')
@@ -47,6 +48,10 @@ interface FixtureOptions {
   readonly sharedTools?: boolean
   readonly desktopVersion?: string
   readonly archiveToolsVersion?: string
+  readonly archiveToolsBody?: string
+  readonly descriptorSuffix?: string
+  readonly runtimeExtra?: Readonly<Record<string, string>>
+  readonly unpack?: string
   readonly extraArchive?: Readonly<Record<string, string>>
   readonly extraApplication?: Readonly<Record<string, string>>
 }
@@ -55,14 +60,23 @@ function integrity(body: Buffer): string {
   return `sha512-${createHash('sha512').update(body).digest('base64')}`
 }
 
+function sha256(body: Buffer): string {
+  return createHash('sha256').update(body).digest('hex')
+}
+
 function write(root: string, path: string, body: string): void {
   mkdirSync(dirname(join(root, path)), { recursive: true })
   writeFileSync(join(root, path), body)
 }
 
-async function fixture(options: FixtureOptions = {}): Promise<Fixture> {
+function temporary(): string {
   const root = mkdtempSync(join(tmpdir(), 'dsh-custom-core-audit-'))
   roots.push(root)
+  return root
+}
+
+async function fixture(options: FixtureOptions = {}): Promise<Fixture> {
+  const root = temporary()
   const release = options.releaseVersion ?? RELEASE
   const sharedTools = options.sharedTools !== false
   const runtime = join(root, 'dsh')
@@ -70,6 +84,7 @@ async function fixture(options: FixtureOptions = {}): Promise<Fixture> {
   const shared = [{ name: DSH, version: release }, { name: HOST, version: release }]
   if (sharedTools) shared.push({ name: TOOLS, version: options.toolsVersion ?? CUSTOM })
   for (const entry of shared) writePackage(join(runtime, 'node_modules'), entry.name, { version: entry.version })
+  for (const [path, body] of Object.entries(options.runtimeExtra ?? {})) write(runtime, path, body)
   writeDesktopRuntime(runtime, {
     schemaVersion: 1,
     version: release,
@@ -110,10 +125,19 @@ async function fixture(options: FixtureOptions = {}): Promise<Fixture> {
       version: options.archiveToolsVersion,
     })}\n`)
   }
+  if (options.archiveToolsBody !== undefined) {
+    writeFileSync(join(source, 'dsh', 'node_modules', TOOLS, 'index.js'), options.archiveToolsBody)
+  }
+  if (options.descriptorSuffix !== undefined) {
+    const descriptor = join(source, 'dsh', 'desktop-runtime.json')
+    writeFileSync(descriptor, `${readFileSync(descriptor, 'utf8')}${options.descriptorSuffix}`)
+  }
   for (const [path, body] of Object.entries(options.extraArchive ?? {})) write(source, path, body)
   const app = join(root, 'app')
   mkdirSync(join(app, 'resources'), { recursive: true })
-  await createPackage(source, join(app, 'resources', 'app.asar'))
+  const archive = join(app, 'resources', 'app.asar')
+  if (options.unpack === undefined) await createPackage(source, archive)
+  else await createPackageWithOptions(source, archive, { unpack: options.unpack })
   for (const [path, body] of Object.entries(options.extraApplication ?? {})) write(app, path, body)
   return { packages: join(packageSet, 'desktop-packages.json'), runtime: join(runtime, 'desktop-runtime.json'), app }
 }
@@ -135,6 +159,7 @@ it('reports the controlled core, release versions, and archive inventory of a cu
     desktop: `${DESKTOP}@${RELEASE}`,
     dsh: `${DSH}@${RELEASE}`,
     host: `${HOST}@${RELEASE}`,
+    integrity: integrity(readFileSync(CONTROLLED_INPUT)),
     sharedPackages: [`${DSH}@${RELEASE}`, `${HOST}@${RELEASE}`, `${TOOLS}@${CUSTOM}`],
   })
 })
@@ -163,6 +188,85 @@ it('rejects a dsh-tools record whose integrity is not the sha512 of the controll
   const built = await fixture({ toolsRecordIntegrity: 'sha512-AAAA' })
   const expected = integrity(readFileSync(CONTROLLED_INPUT))
   await expect(audit(built)).rejects.toThrow(`dsh-tools integrity is sha512-AAAA; expected ${expected}`)
+})
+
+it('binds the controlled tarball to the committed sha256 sidecar', () => {
+  const tarball = CONTROLLED_INPUT
+  const controlled = verifyControlledCore({
+    name: TOOLS,
+    version: CUSTOM,
+    file: 'deepseek-ai-dsh-tools-0.2.2-rc.3.unified.2.tgz',
+    bytes: readFileSync(tarball).byteLength,
+    integrity: integrity(readFileSync(tarball)),
+  }, { tarball, checksum: `${tarball}.sha256` })
+  expect(controlled.sha256).toBe(sha256(readFileSync(tarball)))
+})
+
+it('rejects a controlled tarball whose bytes no longer match the committed sidecar', () => {
+  const root = temporary()
+  const body = Buffer.from(readFileSync(CONTROLLED_INPUT))
+  const expected = sha256(body)
+  body[0] = body[0]! ^ 0xff
+  const tarball = join(root, CUSTOM_CORE_TARBALL)
+  writeFileSync(tarball, body)
+  const checksum = `${tarball}.sha256`
+  writeFileSync(checksum, `${expected}  ${CUSTOM_CORE_TARBALL}\n`)
+  const record = {
+    name: TOOLS,
+    version: CUSTOM,
+    file: 'deepseek-ai-dsh-tools-0.2.2-rc.3.unified.2.tgz',
+    bytes: body.byteLength,
+    integrity: integrity(body),
+  }
+  expect(() => verifyControlledCore(record, { tarball, checksum }))
+    .toThrow(`${tarball} sha256 is ${sha256(body)}; expected ${expected} from ${checksum}`)
+})
+
+it('rejects a sidecar that names another file', () => {
+  const root = temporary()
+  const body = Buffer.from(readFileSync(CONTROLLED_INPUT))
+  const tarball = join(root, CUSTOM_CORE_TARBALL)
+  writeFileSync(tarball, body)
+  const checksum = `${tarball}.sha256`
+  writeFileSync(checksum, `${sha256(body)}  other-core.tgz\n`)
+  expect(() => verifyControlledCore({
+    name: TOOLS,
+    version: CUSTOM,
+    file: 'deepseek-ai-dsh-tools-0.2.2-rc.3.unified.2.tgz',
+    bytes: body.byteLength,
+    integrity: integrity(body),
+  }, { tarball, checksum })).toThrow(`${checksum} is not a sha256sum record; expected "<64 hex>  ${CUSTOM_CORE_TARBALL}"`)
+})
+
+it('rejects a sidecar that is not a two-field sha256sum record', () => {
+  const root = temporary()
+  const body = Buffer.from(readFileSync(CONTROLLED_INPUT))
+  const tarball = join(root, CUSTOM_CORE_TARBALL)
+  writeFileSync(tarball, body)
+  const checksum = `${tarball}.sha256`
+  writeFileSync(checksum, `${sha256(body)}\n`)
+  expect(() => verifyControlledCore({
+    name: TOOLS,
+    version: CUSTOM,
+    file: 'deepseek-ai-dsh-tools-0.2.2-rc.3.unified.2.tgz',
+    bytes: body.byteLength,
+    integrity: integrity(body),
+  }, { tarball, checksum })).toThrow(/is not a sha256sum record/u)
+})
+
+it('rejects a missing sidecar', () => {
+  const root = temporary()
+  const body = Buffer.from(readFileSync(CONTROLLED_INPUT))
+  const tarball = join(root, CUSTOM_CORE_TARBALL)
+  writeFileSync(tarball, body)
+  const checksum = `${tarball}.sha256`
+  expect(() => verifyControlledCore({
+    name: TOOLS,
+    version: CUSTOM,
+    file: 'deepseek-ai-dsh-tools-0.2.2-rc.3.unified.2.tgz',
+    bytes: body.byteLength,
+    integrity: integrity(body),
+  }, { tarball, checksum })).toThrow(`cannot read ${checksum}`)
 })
 
 it('rejects a packaged application whose Desktop version is not the release', async () => {
@@ -200,20 +304,53 @@ it('rejects an application archive that bundles another core version', async () 
   await expect(audit(built)).rejects.toThrow(`application bundles ${TOOLS}@${RELEASE}; expected ${TOOLS}@${CUSTOM}`)
 })
 
+it('rejects an application archive whose runtime file bytes differ from the prepared manifest', async () => {
+  const built = await fixture({ archiveToolsBody: 'export const tampered = true\n' })
+  await expect(audit(built)).rejects.toThrow('desktop runtime: ASAR integrity verification failed')
+})
+
+it('rejects an application archive whose runtime descriptor differs from the prepared one', async () => {
+  const built = await fixture({ descriptorSuffix: '\n' })
+  await expect(audit(built)).rejects.toThrow('desktop runtime: archived descriptor differs from preparation')
+})
+
+it('rejects an application whose unpacked runtime bytes were replaced', async () => {
+  const built = await fixture({
+    runtimeExtra: { 'node_modules/@deepseek-ai/dsh-desktop-host/bin/native.exe': 'native\n' },
+    unpack: '**/*.exe',
+  })
+  writeFileSync(join(built.app, 'resources', 'app.asar.unpacked', 'dsh', 'node_modules', '@deepseek-ai',
+    'dsh-desktop-host', 'bin', 'native.exe'), 'tampered\n')
+  await expect(audit(built)).rejects.toThrow('desktop runtime: ASAR integrity verification failed')
+})
+
 it('rejects an application archive that bundles the tool registry', async () => {
   const built = await fixture({ extraArchive: { 'dsh/node_modules/dsh-tool-registry/index.js': 'export {}\n' } })
   await expect(audit(built)).rejects
     .toThrow(/forbidden package dsh-tool-registry at app\.asar\/dsh\/node_modules\/dsh-tool-registry\/index\.js/u)
 })
 
-it('rejects an application archive that bundles a runtime the prepared manifest does not record', async () => {
+it('rejects a runtime package the package set does not declare', async () => {
   const built = await fixture({ extraArchive: { 'dsh/node_modules/@deepseek-ai/dsh-business-plugin/index.js': 'export {}\n' } })
-  await expect(audit(built)).rejects.toThrow(/unrecorded runtime entry dsh\/node_modules\/@deepseek-ai\/dsh-business-plugin\/index\.js/u)
+  await expect(audit(built)).rejects.toThrow(
+    'undeclared package @deepseek-ai/dsh-business-plugin at app.asar/dsh/node_modules/@deepseek-ai/dsh-business-plugin/index.js')
+})
+
+it('rejects a business plugin the prepared manifest records', async () => {
+  const built = await fixture({ runtimeExtra: { 'node_modules/@deepseek-ai/dsh-business-plugin/index.js': 'export {}\n' } })
+  await expect(audit(built)).rejects.toThrow(
+    'undeclared package @deepseek-ai/dsh-business-plugin at app.asar/dsh/node_modules/@deepseek-ai/dsh-business-plugin/index.js')
+})
+
+it('rejects an application archive entry the prepared manifest does not record', async () => {
+  const built = await fixture({ extraArchive: { 'dsh/extra.txt': 'x' } })
+  await expect(audit(built)).rejects.toThrow('unrecorded runtime entry dsh/extra.txt')
 })
 
 it('rejects an application archive that bundles tarball inputs', async () => {
   const built = await fixture({ extraArchive: { [`dsh/${CUSTOM_CORE_TARBALL}`]: 'x' } })
-  await expect(audit(built)).rejects.toThrow(new RegExp(`controlled core tarball at app\\.asar/dsh/${CUSTOM_CORE_TARBALL.replaceAll('.', '\\.')}`, 'u'))
+  await expect(audit(built)).rejects
+    .toThrow(`controlled core tarball at app.asar/dsh/${CUSTOM_CORE_TARBALL}`)
 })
 
 it('rejects an application that carries an update feed', async () => {
@@ -235,7 +372,8 @@ it('lists every archive violation in one failure', async () => {
   const message = (error as Error).message
   expect(message).toMatch(/^custom core package: 4 violations in .*app\.asar:/u)
   expect(message).toContain('forbidden package dsh-tool-registry at app.asar/dsh/node_modules/dsh-tool-registry/index.js')
-  expect(message).toContain('unrecorded runtime entry dsh/node_modules/@deepseek-ai/dsh-business-plugin/index.js')
+  expect(message).toContain(
+    'undeclared package @deepseek-ai/dsh-business-plugin at app.asar/dsh/node_modules/@deepseek-ai/dsh-business-plugin/index.js')
   expect(message).toContain(`controlled core tarball at app.asar/dsh/${CUSTOM_CORE_TARBALL}`)
   expect(message).toContain('update configuration at resources/app-update.yml')
 })
