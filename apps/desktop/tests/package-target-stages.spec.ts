@@ -1,10 +1,11 @@
 import { writeFileSync } from 'node:fs'
-import { resolve } from 'node:path'
+import { isAbsolute, join, resolve } from 'node:path'
 import { setImmediate } from 'node:timers/promises'
 import { afterEach, expect, it, vi } from 'vitest'
 import { packageTarget, parseDesktopPackageInvocation } from '../scripts/package-target.ts'
 import { withMacOSNotarizationProxy } from '../scripts/macos-notarization-proxy.ts'
 import { packageMacOSArtifacts } from '../scripts/package-macos.ts'
+import { replaceWindowsCustomCore } from '../scripts/replace-windows-custom-core.ts'
 import { withWindowsSigningStage } from '../scripts/windows-signing-stage.mjs'
 import { prepareWindowsSignatureCacheDirectory } from '../scripts/windows-signature-cache-directory.mjs'
 
@@ -13,6 +14,13 @@ vi.mock('../scripts/macos-notarization-proxy.ts', () => ({
 }))
 vi.mock('../scripts/notarize-macos.mjs', () => ({ notarizeMacOS: vi.fn(async () => {}) }))
 vi.mock('../scripts/package-macos.ts', () => ({ packageMacOSArtifacts: vi.fn(async () => {}) }))
+vi.mock('../scripts/replace-windows-custom-core.ts', () => ({
+  CUSTOM_CORE_DIRECTORY: 'custom-core',
+  CUSTOM_CORE_TARBALL: 'dsh-tools-0.2.2-rc.3.unified.2.tgz',
+  replaceWindowsCustomCore: vi.fn(() => ({
+    sourceSha256: 'fixture-source', destinationSha256: 'fixture-destination', destination: 'fixture-custom-core',
+  })),
+}))
 
 vi.mock('../scripts/windows-signing-stage.mjs', () => ({
   withWindowsSigningStage: vi.fn(async (_options: object, operation: () => Promise<void>) => operation()),
@@ -421,4 +429,46 @@ it.each([undefined, '7'])('applies file-owned compression only to the final nota
   expect(zip?.[3].env.ELECTRON_BUILDER_COMPRESSION_LEVEL).toBe(level ?? '3')
   expect(dmg?.[3].env.ELECTRON_BUILDER_COMPRESSION_LEVEL).toBe('9')
   expect(writeFileSync).toHaveBeenCalledOnce()
+})
+
+it('replaces the Windows unsigned core after packing and before package preparation', async () => {
+  const { run } = supervisor()
+  await packageTarget(parseDesktopPackageInvocation(['win-x64', '--unsigned'], 'win32', 'x64'), environment, run)
+  expect(replaceWindowsCustomCore).toHaveBeenCalledOnce()
+  const [request] = vi.mocked(replaceWindowsCustomCore).mock.calls[0]!
+  expect(isAbsolute(request.packedDsh)).toBe(true)
+  expect(request.packedDsh.endsWith(join('targets', 'win-x64', 'packed', 'dsh'))).toBe(true)
+  expect(request.sourceTarball.endsWith(join('resources', 'custom-core', 'dsh-tools-0.2.2-rc.3.unified.2.tgz'))).toBe(true)
+  expect(request.checksumFile).toBe(`${request.sourceTarball}.sha256`)
+  const lastPack = run.run.mock.calls.findIndex(([stage]) => stage.startsWith('--dir native/system/packages/entry pack'))
+  const preparePackages = run.run.mock.calls.findIndex(([stage]) => stage === 'run prepare:packages')
+  expect(lastPack).toBeGreaterThan(-1)
+  expect(preparePackages).toBeGreaterThan(lastPack)
+  const [replacement] = vi.mocked(replaceWindowsCustomCore).mock.invocationCallOrder
+  expect(replacement).toBeGreaterThan(run.run.mock.invocationCallOrder[lastPack]!)
+  expect(replacement).toBeLessThan(run.run.mock.invocationCallOrder[preparePackages]!)
+})
+
+it('stops Windows unsigned packaging when the controlled core replacement fails', async () => {
+  const { run, stages } = supervisor()
+  vi.mocked(replaceWindowsCustomCore).mockImplementationOnce(() => {
+    throw new Error('custom core: fixture refusal')
+  })
+  await expect(packageTarget(parseDesktopPackageInvocation(['win-x64', '--unsigned'], 'win32', 'x64'), environment, run))
+    .rejects.toThrow('custom core: fixture refusal')
+  expect(stages).toContain('run prepare:runtime')
+  expect(stages.some(stage => stage.startsWith('run prepare:packages'))).toBe(false)
+  expect(stages.some(stage => stage.startsWith('run prepare:dsh'))).toBe(false)
+  expect(stages.some(stage => stage.startsWith('exec electron-builder'))).toBe(false)
+  expect(stages.some(stage => stage.includes('smoke-packaged-runtime'))).toBe(false)
+  expect(writeFileSync).not.toHaveBeenCalled()
+})
+
+it.each([
+  ['mac-arm64', ['--unsigned'], 'darwin', 'arm64'],
+  ['win-x64', [], 'win32', 'x64'],
+] as const)('keeps the packed core untouched for %s %j', async (target, flags, platform, arch) => {
+  const { run } = supervisor()
+  await packageTarget(parseDesktopPackageInvocation([target, ...flags], platform, arch), environment, run)
+  expect(replaceWindowsCustomCore).not.toHaveBeenCalled()
 })
