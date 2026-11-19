@@ -1,21 +1,19 @@
 /**
  * Prepare the official Desktop checkout as the custom-core baseline build source.
  *
- * The baseline must stay official `0.2.2-rc.3` source, so this script copies only the four
- * packaging files from the packaging patch commit and reverts the one module relocation those
- * files carry (`desktop-auto-update-environment` moved to the publisher app after the release),
- * which the official tree cannot resolve. The revert is allowed only when the relocated module is
- * the official file byte for byte. Everything else in the checkout stays official, and the command
- * line pins the official commit with no override.
+ * The baseline must stay official `0.2.2-rc.5` source, so this script copies only the four
+ * packaging files from the packaging patch commit. Those files import the Desktop app's own
+ * `desktop-auto-update-environment.mjs`, which the official tree already carries, and every other
+ * relative import must resolve there too. Everything else in the checkout stays official, and the
+ * command line pins the official commit with no override.
  */
 import { execFileSync } from 'node:child_process'
-import { createHash } from 'node:crypto'
 import { existsSync, readFileSync, realpathSync, statSync, writeFileSync } from 'node:fs'
 import { dirname, isAbsolute, join, resolve } from 'node:path'
 import { parseArgs } from 'node:util'
 
-/** Official `dsh-v0.2.2-rc.3` source commit the baseline must be prepared from. */
-export const OFFICIAL_SOURCE_COMMIT = '38a6a5c965aa99ab525161efb7cc5cf1fe62fced'
+/** Official `dsh-v0.2.2-rc.5` source commit the baseline must be prepared from. */
+export const OFFICIAL_SOURCE_COMMIT = '9c2670d3bce5275e0d1610272958121af87787bb'
 
 /** Packaging files the baseline takes from the packaging patch commit, in manifest order. */
 export const BASELINE_PACKAGING_FILES = [
@@ -25,11 +23,8 @@ export const BASELINE_PACKAGING_FILES = [
   'apps/desktop/scripts/package-target.ts',
 ]
 
+// Only the publisher app provides this module, and the official Desktop tree does not carry it.
 const PUBLISHER_MODULE = '@deepseek-ai/dsh-desktop-publisher/desktop-auto-update-environment.mjs'
-const LOCAL_MODULE = './desktop-auto-update-environment.mjs'
-const PUBLISHER_MODULE_FILE = 'apps/desktop-publisher/src/desktop-auto-update-environment.mjs'
-const LOCAL_MODULE_FILE = 'apps/desktop/scripts/desktop-auto-update-environment.mjs'
-const LOCAL_MODULE_SHA256 = '4fc37321febd4979b732a2832af4eb832602b30185e51584c1ddc0b0cb3db29a'
 const COMMIT = /^[0-9a-f]{40}$/u
 const RELATIVE_IMPORT = /\bfrom '(\.{1,2}\/[^']+)'/gu
 
@@ -88,61 +83,11 @@ function blob(directory, revision) {
 }
 
 /**
- * Read a file blob as raw bytes without altering them.
- * @param {string} directory Working directory for the command.
- * @param {string} revision Commit and path, as `<commit>:<path>`.
- * @returns {Buffer | undefined} Blob bytes, or undefined when the commit does not carry the path.
- */
-function blobBytes(directory, revision) {
-  try {
-    return execFileSync('git', ['cat-file', '-p', revision], {
-      cwd: directory, stdio: ['ignore', 'pipe', 'pipe'], maxBuffer: 16 * 1024 * 1024,
-    })
-  } catch {
-    return undefined
-  }
-}
-
-/**
- * Verify that the module the packaging patch relocated is the official module byte for byte.
- *
- * The import revert is only safe when the publisher copy is the official file moved elsewhere;
- * comparing both sides against each other and against the pinned digest rejects any drift before
- * the checkout is written.
- * @param {string} directory Official checkout root.
- * @param {string} packagingCommit Packaging patch commit carrying the relocated module.
- */
-function verifyRelocatedModule(directory, packagingCommit) {
-  const publisher = blobBytes(directory, `${packagingCommit}:${PUBLISHER_MODULE_FILE}`)
-  if (publisher === undefined) fail(`${PUBLISHER_MODULE_FILE} is not present in packaging commit ${packagingCommit}`)
-  const localPath = join(directory, LOCAL_MODULE_FILE)
-  if (!existsSync(localPath)) fail(`${LOCAL_MODULE_FILE} is missing from the official source tree`)
-  const publisherDigest = sha256(publisher)
-  const localDigest = sha256(readFileSync(localPath))
-  if (publisherDigest !== localDigest) {
-    fail(`${PUBLISHER_MODULE_FILE} sha256 is ${publisherDigest}; ${LOCAL_MODULE_FILE} sha256 is ${localDigest};`
-      + ' the import revert requires the same module bytes')
-  }
-  if (localDigest !== LOCAL_MODULE_SHA256) {
-    fail(`${LOCAL_MODULE_FILE} sha256 is ${localDigest}; expected ${LOCAL_MODULE_SHA256}`)
-  }
-}
-
-/**
- * Hash bytes with SHA256 for module identity checks.
- * @param {Buffer} content Module bytes.
- * @returns {string} Lowercase hexadecimal digest.
- */
-function sha256(content) {
-  return createHash('sha256').update(content).digest('hex')
-}
-
-/**
- * Prepare the official checkout by copying the packaging scripts and reverting their module relocation.
+ * Prepare the official checkout by copying the packaging scripts onto it.
  * @param {{ source: string, packagingCommit: string, officialCommit?: string }} options Official checkout
  *   directory, packaging patch commit, and the official commit that checkout must be at.
- * @returns {{ officialCommit: string, packagingCommit: string, changedFiles: string[],
- *   importRewrites: Record<string, number> }} Prepared manifest: the commits used and the files written.
+ * @returns {{ officialCommit: string, packagingCommit: string, changedFiles: string[] }}
+ *   Prepared manifest: the commits used and the files written.
  */
 export function prepareCustomCoreBaseline(options) {
   const { source, packagingCommit, officialCommit = OFFICIAL_SOURCE_COMMIT } = options
@@ -174,28 +119,18 @@ export function prepareCustomCoreBaseline(options) {
     fail(`${directory} has uncommitted changes; clean it before preparing the baseline: ${dirty.split('\n').join(', ')}`)
   }
   const prepared = []
-  let moduleVerified = false
   for (const path of BASELINE_PACKAGING_FILES) {
     const content = blob(directory, `${packagingCommit}:${path}`)
     if (content === undefined) fail(`${path} is not present in packaging commit ${packagingCommit}`)
-    const importRewrites = content.split(`'${PUBLISHER_MODULE}'`).length - 1
-    if (importRewrites > 1) {
-      fail(`${path} imports ${PUBLISHER_MODULE} ${importRewrites} times; expected at most one revertable import`)
+    if (content.includes(PUBLISHER_MODULE)) {
+      fail(`${path} imports ${PUBLISHER_MODULE}; the baseline cannot resolve the publisher app`)
     }
-    if (importRewrites === 1 && !moduleVerified) {
-      verifyRelocatedModule(directory, packagingCommit)
-      moduleVerified = true
-    }
-    const adapted = content.replaceAll(`'${PUBLISHER_MODULE}'`, `'${LOCAL_MODULE}'`)
-    if (adapted.includes(PUBLISHER_MODULE)) {
-      fail(`${path} still references ${PUBLISHER_MODULE}; the baseline cannot resolve the publisher app`)
-    }
-    for (const [, specifier] of adapted.matchAll(RELATIVE_IMPORT)) {
+    for (const [, specifier] of content.matchAll(RELATIVE_IMPORT)) {
       if (!existsSync(resolve(directory, dirname(path), specifier))) {
         fail(`${path} imports ${specifier}, which the official source tree does not provide`)
       }
     }
-    prepared.push({ path, content: adapted, importRewrites })
+    prepared.push({ path, content })
   }
   for (const entry of prepared) writeFileSync(join(directory, entry.path), entry.content)
   for (const entry of prepared) {
@@ -214,7 +149,6 @@ export function prepareCustomCoreBaseline(options) {
     officialCommit,
     packagingCommit,
     changedFiles: prepared.map(entry => entry.path),
-    importRewrites: Object.fromEntries(prepared.map(entry => [entry.path, entry.importRewrites])),
   }
 }
 

@@ -301,7 +301,7 @@ describe('pinned baseline commits', () => {
     '.github/workflows/desktop-custom-core-windows.yml',
     'apps/desktop/scripts/prepare-custom-core-baseline.mjs',
     'apps/desktop/tests/prepare-custom-core-baseline.spec.ts',
-    'docs/superpowers/plans/2026-11-18-custom-windows-desktop-core.md',
+    'docs/superpowers/specs/2026-11-19-custom-windows-desktop-core-rc5-design.md',
     'scripts/verify-repository-references.ts',
   ]
 
@@ -317,7 +317,7 @@ describe('pinned baseline commits', () => {
     ['docs/technical-design.md', official],
     ['apps/desktop/scripts/other-helper.mjs', official],
     [baselineFiles[1]!, packaging],
-    [baselineFiles[3]!, packaging],
+    [baselineFiles[2]!, packaging],
     [baselineFiles[4]!, unrelated],
     [baselineFiles[0]!, unrelated],
   ])('rejects %s: %s outside the exact pinned files and values', (file, commit) => {

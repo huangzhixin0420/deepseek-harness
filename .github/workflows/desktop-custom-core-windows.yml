@@ -35,10 +35,10 @@ jobs:
         shell: pwsh
     env:
       DSH_TELEMETRY_DISABLED: '1'
-      # Official dsh-v0.2.2-rc.3 source; the baseline preparation script pins the same commit.
-      BASELINE_OFFICIAL_COMMIT: 38a6a5c965aa99ab525161efb7cc5cf1fe62fced
-      # Task 1 packaging patch: unsigned Windows packaging without release settings.
-      BASELINE_PACKAGING_COMMIT: 89e1904d55e7f4b9560595addfecd48a088d88bc
+      # Official dsh-v0.2.2-rc.5 source; the baseline preparation script pins the same commit.
+      BASELINE_OFFICIAL_COMMIT: 9c2670d3bce5275e0d1610272958121af87787bb
+      # Task 1 packaging patch on this branch: unsigned Windows packaging without release settings.
+      BASELINE_PACKAGING_COMMIT: 685be3878a03847c9fdc13a303ed87c7bf00ef2b
     steps:
       - name: Checkout official baseline source
         uses: actions/checkout@v7.0.1

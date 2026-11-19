@@ -32,19 +32,33 @@ const pinnedCommitReferences: readonly PinnedCommitReference[] = [
   // The workflow checks out the official baseline commit and names the packaging patch commit.
   {
     file: '.github/workflows/desktop-custom-core-windows.yml',
-    commits: ['38a6a5c965aa99ab525161efb7cc5cf1fe62fced', '89e1904d55e7f4b9560595addfecd48a088d88bc'],
+    commits: ['9c2670d3bce5275e0d1610272958121af87787bb', '685be3878a03847c9fdc13a303ed87c7bf00ef2b'],
   },
   // Baseline preparation refuses any checkout that is not the official release commit.
   {
     file: 'apps/desktop/scripts/prepare-custom-core-baseline.mjs',
-    commits: ['38a6a5c965aa99ab525161efb7cc5cf1fe62fced'],
+    commits: ['9c2670d3bce5275e0d1610272958121af87787bb'],
   },
   // The baseline test asserts the pinned commit the command line enforces.
   {
     file: 'apps/desktop/tests/prepare-custom-core-baseline.spec.ts',
-    commits: ['38a6a5c965aa99ab525161efb7cc5cf1fe62fced'],
+    commits: ['9c2670d3bce5275e0d1610272958121af87787bb'],
   },
-  // The delivery plan states the official commit baseline preparation must verify.
+  // The rc.5 adaptation design pins the official baseline and both packaging patch commits.
+  {
+    file: 'docs/superpowers/specs/2026-11-19-custom-windows-desktop-core-rc5-design.md',
+    commits: [
+      '9c2670d3bce5275e0d1610272958121af87787bb',
+      '685be3878a03847c9fdc13a303ed87c7bf00ef2b',
+      '89e1904d55e7f4b9560595addfecd48a088d88bc',
+    ],
+  },
+  // The rc.5 adaptation plan pins the branch range it migrated.
+  {
+    file: 'docs/superpowers/plans/2026-11-19-custom-windows-desktop-core-rc5.md',
+    commits: ['39163dd30f703a79079e2d2446545cff3c453738', '4adb11d8b66447e82787edb3b31c7695ee9d91d7'],
+  },
+  // The delivered rc.3 plan keeps the official commit that build verified.
   {
     file: 'docs/superpowers/plans/2026-11-18-custom-windows-desktop-core.md',
     commits: ['38a6a5c965aa99ab525161efb7cc5cf1fe62fced'],
@@ -52,7 +66,14 @@ const pinnedCommitReferences: readonly PinnedCommitReference[] = [
   // This file is the definition site of the exemptions.
   {
     file: 'scripts/verify-repository-references.ts',
-    commits: ['38a6a5c965aa99ab525161efb7cc5cf1fe62fced', '89e1904d55e7f4b9560595addfecd48a088d88bc'],
+    commits: [
+      '9c2670d3bce5275e0d1610272958121af87787bb',
+      '685be3878a03847c9fdc13a303ed87c7bf00ef2b',
+      '89e1904d55e7f4b9560595addfecd48a088d88bc',
+      '39163dd30f703a79079e2d2446545cff3c453738',
+      '4adb11d8b66447e82787edb3b31c7695ee9d91d7',
+      '38a6a5c965aa99ab525161efb7cc5cf1fe62fced',
+    ],
   },
 ]
 

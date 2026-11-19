@@ -1,4 +1,4 @@
-/** Official `dsh-v0.2.2-rc.3` source commit the baseline must be prepared from. */
+/** Official `dsh-v0.2.2-rc.5` source commit the baseline must be prepared from. */
 export const OFFICIAL_SOURCE_COMMIT: string
 
 /** Packaging scripts the baseline takes from the packaging patch commit, in manifest order. */
@@ -22,12 +22,10 @@ export interface PrepareCustomCoreBaselineRecord {
   readonly packagingCommit: string
   /** Scripts written into the official checkout, in manifest order. */
   readonly changedFiles: readonly string[]
-  /** Reverted publisher imports per script; only the relocated-module scripts report one. */
-  readonly importRewrites: Readonly<Record<string, number>>
 }
 
 /**
- * Prepare the official checkout by copying the packaging scripts and reverting their module relocation.
+ * Prepare the official checkout by copying the packaging scripts onto it.
  * @param options - Official checkout directory, packaging patch commit, and the official commit it must be at.
  * @returns Prepared manifest: the commits used and the files written.
  */

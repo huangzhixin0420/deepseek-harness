@@ -6,7 +6,7 @@
  * registers one Host-global inherited tool and one scope-owned tool behind an
  * `includeOwn` allow-list, then reports what the installed core did: whether
  * the own registration exists in the catalog, whether it is projected as
- * visible, and whether a call to it is admitted. Bare `rc3` admits the call;
+ * visible, and whether a call to it is admitted. The official rc.5 baseline admits the call;
  * the unified core rejects it.
  *
  * It also creates or resumes one real Session through the installed core, which

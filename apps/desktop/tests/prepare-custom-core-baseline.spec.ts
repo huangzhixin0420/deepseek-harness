@@ -1,5 +1,4 @@
 import { execFileSync, spawnSync } from 'node:child_process'
-import { createHash } from 'node:crypto'
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { dirname, join } from 'node:path'
@@ -10,11 +9,9 @@ import { prepareCustomCoreBaseline } from '../scripts/prepare-custom-core-baseli
 const APP_ROOT = join(import.meta.dirname, '..')
 const REPOSITORY_ROOT = join(APP_ROOT, '..', '..')
 const SCRIPT = join(APP_ROOT, 'scripts', 'prepare-custom-core-baseline.mjs')
-const PINNED_COMMIT = '38a6a5c965aa99ab525161efb7cc5cf1fe62fced'
-const PINNED_MODULE = '4fc37321febd4979b732a2832af4eb832602b30185e51584c1ddc0b0cb3db29a'
+const PINNED_COMMIT = '9c2670d3bce5275e0d1610272958121af87787bb'
 const PUBLISHER_IMPORT = '@deepseek-ai/dsh-desktop-publisher/desktop-auto-update-environment.mjs'
 const LOCAL_IMPORT = './desktop-auto-update-environment.mjs'
-const PUBLISHER_MODULE_FILE = 'apps/desktop-publisher/src/desktop-auto-update-environment.mjs'
 const LOCAL_MODULE_FILE = 'apps/desktop/scripts/desktop-auto-update-environment.mjs'
 const PACKAGE_ENVIRONMENT = 'apps/desktop/scripts/desktop-package-environment.mjs'
 const PACKAGE_ENVIRONMENT_DECLARATION = 'apps/desktop/scripts/desktop-package-environment.d.mts'
@@ -24,13 +21,13 @@ const PACKAGING_FILES = [PACKAGE_ENVIRONMENT, PACKAGE_ENVIRONMENT_DECLARATION, B
 const CORE_SOURCE = 'packages/core/src/index.ts'
 const PACKAGING_HELPER = 'apps/desktop/scripts/custom-core-helper.ts'
 
-// rc.5 keeps this module in the Desktop app; its bytes still match the publisher copy the revert targets.
-const RELOCATED_MODULE = readFileSync(join(REPOSITORY_ROOT, LOCAL_MODULE_FILE), 'utf8')
+/** The official Desktop module every packaging file imports. */
+const LOCAL_MODULE = readFileSync(join(REPOSITORY_ROOT, LOCAL_MODULE_FILE), 'utf8')
 
 const OFFICIAL_TREE: Readonly<Record<string, string>> = {
   [CORE_SOURCE]: "export const CORE = 'official'\n",
-  'package.json': '{"name":"fixture","version":"0.2.2-rc.3"}\n',
-  [LOCAL_MODULE_FILE]: RELOCATED_MODULE,
+  'package.json': '{"name":"fixture","version":"0.2.2-rc.5"}\n',
+  [LOCAL_MODULE_FILE]: LOCAL_MODULE,
   [PACKAGE_ENVIRONMENT]: `import { resolveDesktopAutoUpdateConfig } from '${LOCAL_IMPORT}'
 
 export function loadDesktopPackageEnvironment(platform, environment) {
@@ -64,8 +61,7 @@ export async function main() {
 const PACKAGING_TREE: Readonly<Record<string, string>> = {
   [CORE_SOURCE]: "export const CORE = 'unified'\n",
   [PACKAGING_HELPER]: "export const CUSTOM_CORE = 'controlled tarball'\n",
-  [PUBLISHER_MODULE_FILE]: RELOCATED_MODULE,
-  [PACKAGE_ENVIRONMENT]: `import { resolveDesktopAutoUpdateConfig } from '${PUBLISHER_IMPORT}'
+  [PACKAGE_ENVIRONMENT]: `import { resolveDesktopAutoUpdateConfig } from '${LOCAL_IMPORT}'
 
 export function localWindowsPackageEnvironment(environment = process.env) {
   return { ...environment, DSH_DESKTOP_APP_ID: 'com.deepseek.dsh', DSH_DESKTOP_UNSIGNED: '1' }
@@ -79,7 +75,7 @@ export function validateDesktopPackageEnvironment(environment, target, options =
   [PACKAGE_ENVIRONMENT_DECLARATION]: `export function localMacOSPackageEnvironment(environment?: NodeJS.ProcessEnv): NodeJS.ProcessEnv
 export function localWindowsPackageEnvironment(environment?: NodeJS.ProcessEnv): NodeJS.ProcessEnv
 `,
-  [BUILDER_CONFIG]: `import { resolveDesktopAutoUpdateConfig } from '${PUBLISHER_IMPORT}'
+  [BUILDER_CONFIG]: `import { resolveDesktopAutoUpdateConfig } from '${LOCAL_IMPORT}'
 
 export function createElectronBuilderConfig(environment) {
   const policy = environment.DSH_DESKTOP_UNSIGNED === '1' ? undefined : requirePolicy(environment)
@@ -87,7 +83,7 @@ export function createElectronBuilderConfig(environment) {
 }
 `,
   [PACKAGE_TARGET]: `import { join } from 'node:path'
-import { desktopBuildRecordFilename, resolveDesktopAutoUpdateConfig } from '${PUBLISHER_IMPORT}'
+import { desktopBuildRecordFilename, resolveDesktopAutoUpdateConfig } from '${LOCAL_IMPORT}'
 import { localWindowsPackageEnvironment } from './desktop-package-environment.mjs'
 
 export async function main() {
@@ -122,14 +118,6 @@ interface Prepared {
   readonly stderr: string
 }
 
-function digest(content: string): string {
-  return createHash('sha256').update(content).digest('hex')
-}
-
-function preparedContent(path: string): string {
-  return PACKAGING_TREE[path]!.replaceAll(`'${PUBLISHER_IMPORT}'`, `'${LOCAL_IMPORT}'`)
-}
-
 function writeTree(root: string, tree: Readonly<Record<string, string | null>>): void {
   for (const [path, content] of Object.entries(tree)) {
     const destination = join(root, path)
@@ -142,7 +130,7 @@ function writeTree(root: string, tree: Readonly<Record<string, string | null>>):
   }
 }
 
-function withRepository(action: (repository: Repository) => void, relocatedModule = RELOCATED_MODULE): void {
+function withRepository(action: (repository: Repository) => void): void {
   const root = mkdtempSync(join(tmpdir(), 'custom-core-baseline-'))
   try {
     const git = (...args: string[]): string => execFileSync('git', [
@@ -151,13 +139,13 @@ function withRepository(action: (repository: Repository) => void, relocatedModul
     ], { cwd: root, env: ENVIRONMENT, encoding: 'utf8', stdio: 'pipe' }).trim()
     git('init', '--initial-branch=main')
     git('config', 'core.autocrlf', 'false')
-    writeTree(root, { ...OFFICIAL_TREE, [LOCAL_MODULE_FILE]: relocatedModule })
+    writeTree(root, OFFICIAL_TREE)
     git('add', '.')
     git('commit', '-m', 'official source')
     const official = git('rev-parse', 'HEAD')
     const packaging = (changes: Readonly<Record<string, string | null>> = {}): string => {
       git('checkout', '-B', 'packaging', official)
-      writeTree(root, { ...PACKAGING_TREE, [PUBLISHER_MODULE_FILE]: relocatedModule, ...changes })
+      writeTree(root, { ...PACKAGING_TREE, ...changes })
       git('add', '-A')
       git('commit', '-m', 'packaging patch')
       const commit = git('rev-parse', 'HEAD')
@@ -189,9 +177,8 @@ it('copies only the four packaging files onto the official checkout', () => {
         officialCommit: repository.official,
         packagingCommit: packaging,
         changedFiles: PACKAGING_FILES,
-        importRewrites: Object.fromEntries(PACKAGING_FILES.map(path => [path, path === PACKAGE_ENVIRONMENT_DECLARATION ? 0 : 1])),
       })
-    for (const path of PACKAGING_FILES) expect(readFileSync(join(repository.root, path), 'utf8')).toBe(preparedContent(path))
+    for (const path of PACKAGING_FILES) expect(readFileSync(join(repository.root, path), 'utf8')).toBe(PACKAGING_TREE[path])
     expect(readFileSync(join(repository.root, CORE_SOURCE), 'utf8')).toBe(OFFICIAL_TREE[CORE_SOURCE])
     expect(existsSync(join(repository.root, PACKAGING_HELPER))).toBe(false)
     expect(repository.git('diff', '--name-only').split('\n')).toEqual([...PACKAGING_FILES].sort())
@@ -199,34 +186,15 @@ it('copies only the four packaging files onto the official checkout', () => {
   })
 })
 
-it('rejects a publisher module whose bytes differ from the official module', () => {
+it('rejects a packaging file that imports the publisher app module', () => {
   withRepository((repository) => {
-    const packaging = repository.packaging({ [PUBLISHER_MODULE_FILE]: `${RELOCATED_MODULE}\nexport const drifted = true\n` })
+    const relocated = PACKAGING_TREE[BUILDER_CONFIG]!.replace(
+      `from '${LOCAL_IMPORT}'`, `from '${PUBLISHER_IMPORT}'`)
+    const packaging = repository.packaging({ [BUILDER_CONFIG]: relocated })
     expect(() => prepareFixture(repository, packaging)).toThrow(
-      `custom core baseline: ${PUBLISHER_MODULE_FILE} sha256 is ${digest(`${RELOCATED_MODULE}\nexport const drifted = true\n`)};`
-      + ` ${LOCAL_MODULE_FILE} sha256 is ${PINNED_MODULE}; the import revert requires the same module bytes`,
+      `custom core baseline: ${BUILDER_CONFIG} imports ${PUBLISHER_IMPORT}; the baseline cannot resolve the publisher app`,
     )
     for (const path of PACKAGING_FILES) expect(readFileSync(join(repository.root, path), 'utf8')).toBe(OFFICIAL_TREE[path])
-  })
-})
-
-it('rejects a publisher module that is not the pinned relocation', () => {
-  const replacement = 'export const resolveDesktopAutoUpdateConfig = () => undefined\n'
-  withRepository((repository) => {
-    const packaging = repository.packaging()
-    expect(() => prepareFixture(repository, packaging)).toThrow(
-      `custom core baseline: ${LOCAL_MODULE_FILE} sha256 is ${digest(replacement)}; expected ${PINNED_MODULE}`,
-    )
-    for (const path of PACKAGING_FILES) expect(readFileSync(join(repository.root, path), 'utf8')).toBe(OFFICIAL_TREE[path])
-  }, replacement)
-})
-
-it('rejects a packaging commit that does not carry the publisher module', () => {
-  withRepository((repository) => {
-    const packaging = repository.packaging({ [PUBLISHER_MODULE_FILE]: null })
-    expect(() => prepareFixture(repository, packaging)).toThrow(
-      `custom core baseline: ${PUBLISHER_MODULE_FILE} is not present in packaging commit ${packaging}`,
-    )
   })
 })
 
@@ -309,18 +277,6 @@ it('rejects a packaging commit that does not carry one of the scripts', () => {
     expect(() => prepareFixture(repository, packaging)).toThrow(
       `custom core baseline: ${BUILDER_CONFIG} is not present in packaging commit ${packaging}`,
     )
-  })
-})
-
-it('rejects repeated publisher imports instead of guessing which one to revert', () => {
-  withRepository((repository) => {
-    const repeated = PACKAGING_TREE[PACKAGE_TARGET]!.replace('import { localWindowsPackageEnvironment }',
-      `import { desktopBuildRecordFilename as recordName } from '${PUBLISHER_IMPORT}'\nimport { localWindowsPackageEnvironment }`)
-    const packaging = repository.packaging({ [PACKAGE_TARGET]: repeated })
-    expect(() => prepareFixture(repository, packaging)).toThrow(
-      `custom core baseline: ${PACKAGE_TARGET} imports ${PUBLISHER_IMPORT} 2 times; expected at most one revertable import`,
-    )
-    expect(readFileSync(join(repository.root, PACKAGE_TARGET), 'utf8')).toBe(OFFICIAL_TREE[PACKAGE_TARGET])
   })
 })
 
