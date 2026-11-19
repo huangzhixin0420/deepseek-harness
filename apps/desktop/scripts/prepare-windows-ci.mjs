@@ -17,7 +17,7 @@ import { resolveWindowsPackageSettings } from './windows-package-settings.mjs'
  */
 export function windowsCiPackageEnvironment(mode, environment, appRoot) {
   const selected = mode === 'unsigned'
-    ? localWindowsPackageEnvironment()
+    ? localWindowsPackageEnvironment(environment)
     : loadDesktopPackageEnvironment('win32', environment, appRoot, { unsigned: false })
   return { environment: selected, compressionLevel: resolveWindowsPackageSettings(selected).compressionLevel }
 }

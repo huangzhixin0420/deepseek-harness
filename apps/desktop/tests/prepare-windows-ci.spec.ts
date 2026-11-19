@@ -52,7 +52,9 @@ describe('manual Windows CI packaging selection', () => {
       const selected = windowsCiPackageEnvironment('unsigned', {
         DSH_PACKAGING_PRESET: 'test', DSH_PACKAGING_CONFIG_DIR: directory,
         PACKAGE_WINDOWS_COMPRESSION_LEVEL: '7', DSH_DESKTOP_WINDOWS_COMPRESSION_LEVEL: '5',
+        PATH: '/custom/windows-ci-path',
       }, directory)
+      expect(selected.environment.PATH).toBe('/custom/windows-ci-path')
       expect(selected.compressionLevel).toBe(3)
       expect(resolveWindowsPackageSettings(selected.environment))
         .toEqual({ signatureCacheConcurrency: 4, packConcurrency: 4, compressionLevel: 3 })
