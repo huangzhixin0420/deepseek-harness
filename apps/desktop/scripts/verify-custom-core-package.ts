@@ -45,8 +45,8 @@ export interface CustomCorePackageAuditSummary {
 
 const APP_ROOT = resolve(import.meta.dirname, '..')
 const ERROR_PREFIX = 'custom core package:'
-const RELEASE_VERSION = '0.2.2-rc.3'
-const CORE_VERSION = '0.2.2-rc.3.unified.2'
+const RELEASE_VERSION = '0.2.2-rc.5'
+const CORE_VERSION = '0.2.2-rc.5.unified.1'
 const DSH_PACKAGE = '@deepseek-ai/dsh'
 const CORE_PACKAGE = '@deepseek-ai/dsh-tools'
 const DESKTOP_PACKAGE = '@deepseek-ai/dsh-desktop'

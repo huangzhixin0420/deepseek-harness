@@ -21,8 +21,8 @@ const { createPackage, createPackageWithOptions } = builderRequire('@electron/as
 const APP_ROOT = join(import.meta.dirname, '..')
 const SCRIPT = join(APP_ROOT, 'scripts', 'verify-custom-core-package.ts')
 const CONTROLLED_INPUT = join(APP_ROOT, 'resources', CUSTOM_CORE_DIRECTORY, CUSTOM_CORE_TARBALL)
-const RELEASE = '0.2.2-rc.3'
-const CUSTOM = '0.2.2-rc.3.unified.2'
+const RELEASE = '0.2.2-rc.5'
+const CUSTOM = '0.2.2-rc.5.unified.1'
 const DSH = '@deepseek-ai/dsh'
 const HOST = '@deepseek-ai/dsh-desktop-host'
 const TOOLS = '@deepseek-ai/dsh-tools'
@@ -97,14 +97,14 @@ async function fixture(options: FixtureOptions = {}): Promise<Fixture> {
   const toolsRecord = {
     name: TOOLS,
     version: options.toolsRecordVersion ?? CUSTOM,
-    file: 'deepseek-ai-dsh-tools-0.2.2-rc.3.unified.2.tgz',
+    file: 'deepseek-ai-dsh-tools-0.2.2-rc.5.unified.1.tgz',
     bytes: options.toolsRecordBytes ?? controlled.byteLength,
     integrity: options.toolsRecordIntegrity ?? integrity(controlled),
   }
   const packages = [
-    { name: DSH, version: options.dshVersion ?? RELEASE, file: 'deepseek-ai-dsh-0.2.2-rc.3.tgz', bytes: 3, integrity: integrity(Buffer.from('dsh')) },
+    { name: DSH, version: options.dshVersion ?? RELEASE, file: 'deepseek-ai-dsh-0.2.2-rc.5.tgz', bytes: 3, integrity: integrity(Buffer.from('dsh')) },
     ...Array.from({ length: options.toolsRecords ?? 1 }, () => toolsRecord),
-    { name: HOST, version: options.hostVersion ?? RELEASE, file: 'deepseek-ai-dsh-desktop-host-0.2.2-rc.3.tgz', bytes: 4, integrity: integrity(Buffer.from('host')) },
+    { name: HOST, version: options.hostVersion ?? RELEASE, file: 'deepseek-ai-dsh-desktop-host-0.2.2-rc.5.tgz', bytes: 4, integrity: integrity(Buffer.from('host')) },
   ].sort((left, right) => left.name.localeCompare(right.name))
   const packageSet = join(root, 'package-set')
   mkdirSync(packageSet, { recursive: true })
@@ -180,8 +180,8 @@ it('rejects a dsh-tools record whose version is not the custom core', async () =
 })
 
 it('rejects a dsh-tools record that no longer matches the controlled bytes', async () => {
-  const built = await fixture({ toolsRecordBytes: 132804 })
-  await expect(audit(built)).rejects.toThrow('dsh-tools tarball is 132804 bytes; expected 132805')
+  const built = await fixture({ toolsRecordBytes: 133049 })
+  await expect(audit(built)).rejects.toThrow('dsh-tools tarball is 133049 bytes; expected 133050')
 })
 
 it('rejects a dsh-tools record whose integrity is not the sha512 of the controlled tarball', async () => {
@@ -195,7 +195,7 @@ it('binds the controlled tarball to the committed sha256 sidecar', () => {
   const controlled = verifyControlledCore({
     name: TOOLS,
     version: CUSTOM,
-    file: 'deepseek-ai-dsh-tools-0.2.2-rc.3.unified.2.tgz',
+    file: 'deepseek-ai-dsh-tools-0.2.2-rc.5.unified.1.tgz',
     bytes: readFileSync(tarball).byteLength,
     integrity: integrity(readFileSync(tarball)),
   }, { tarball, checksum: `${tarball}.sha256` })
@@ -214,7 +214,7 @@ it('rejects a controlled tarball whose bytes no longer match the committed sidec
   const record = {
     name: TOOLS,
     version: CUSTOM,
-    file: 'deepseek-ai-dsh-tools-0.2.2-rc.3.unified.2.tgz',
+    file: 'deepseek-ai-dsh-tools-0.2.2-rc.5.unified.1.tgz',
     bytes: body.byteLength,
     integrity: integrity(body),
   }
@@ -232,7 +232,7 @@ it('rejects a sidecar that names another file', () => {
   expect(() => verifyControlledCore({
     name: TOOLS,
     version: CUSTOM,
-    file: 'deepseek-ai-dsh-tools-0.2.2-rc.3.unified.2.tgz',
+    file: 'deepseek-ai-dsh-tools-0.2.2-rc.5.unified.1.tgz',
     bytes: body.byteLength,
     integrity: integrity(body),
   }, { tarball, checksum })).toThrow(`${checksum} is not a sha256sum record; expected "<64 hex>  ${CUSTOM_CORE_TARBALL}"`)
@@ -248,7 +248,7 @@ it('rejects a sidecar that is not a two-field sha256sum record', () => {
   expect(() => verifyControlledCore({
     name: TOOLS,
     version: CUSTOM,
-    file: 'deepseek-ai-dsh-tools-0.2.2-rc.3.unified.2.tgz',
+    file: 'deepseek-ai-dsh-tools-0.2.2-rc.5.unified.1.tgz',
     bytes: body.byteLength,
     integrity: integrity(body),
   }, { tarball, checksum })).toThrow(/is not a sha256sum record/u)
@@ -263,7 +263,7 @@ it('rejects a missing sidecar', () => {
   expect(() => verifyControlledCore({
     name: TOOLS,
     version: CUSTOM,
-    file: 'deepseek-ai-dsh-tools-0.2.2-rc.3.unified.2.tgz',
+    file: 'deepseek-ai-dsh-tools-0.2.2-rc.5.unified.1.tgz',
     bytes: body.byteLength,
     integrity: integrity(body),
   }, { tarball, checksum })).toThrow(`cannot read ${checksum}`)

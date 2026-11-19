@@ -17,11 +17,11 @@ import { basename, join } from 'node:path'
 export const CUSTOM_CORE_DIRECTORY = 'custom-core'
 
 /** Reviewed tarball under {@link CUSTOM_CORE_DIRECTORY}; its bytes are the only core source. */
-export const CUSTOM_CORE_TARBALL = 'dsh-tools-0.2.2-rc.3.unified.2.tgz'
+export const CUSTOM_CORE_TARBALL = 'dsh-tools-0.2.2-rc.5.unified.1.tgz'
 
-const OFFICIAL_TARBALL = 'deepseek-ai-dsh-tools-0.2.2-rc.3.tgz'
-const PACKED_CUSTOM_TARBALL = 'deepseek-ai-dsh-tools-0.2.2-rc.3.unified.2.tgz'
-const CORE_TARBALL_BYTES = 132805
+const OFFICIAL_TARBALL = 'deepseek-ai-dsh-tools-0.2.2-rc.5.tgz'
+const PACKED_CUSTOM_TARBALL = 'deepseek-ai-dsh-tools-0.2.2-rc.5.unified.1.tgz'
+const CORE_TARBALL_BYTES = 133050
 const SHA256SUMS_RECORD = /^([0-9a-f]{64}) {2}(\S+)$/u
 
 /** Packed inputs and the controlled source one Windows unsigned build replaces. */

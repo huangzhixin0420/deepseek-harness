@@ -16,7 +16,7 @@ vi.mock('../scripts/notarize-macos.mjs', () => ({ notarizeMacOS: vi.fn(async () 
 vi.mock('../scripts/package-macos.ts', () => ({ packageMacOSArtifacts: vi.fn(async () => {}) }))
 vi.mock('../scripts/replace-windows-custom-core.ts', () => ({
   CUSTOM_CORE_DIRECTORY: 'custom-core',
-  CUSTOM_CORE_TARBALL: 'dsh-tools-0.2.2-rc.3.unified.2.tgz',
+  CUSTOM_CORE_TARBALL: 'dsh-tools-0.2.2-rc.5.unified.1.tgz',
   replaceWindowsCustomCore: vi.fn(() => ({
     sourceSha256: 'fixture-source', destinationSha256: 'fixture-destination', destination: 'fixture-custom-core',
   })),
@@ -438,7 +438,7 @@ it('replaces the Windows unsigned core after packing and before package preparat
   const [request] = vi.mocked(replaceWindowsCustomCore).mock.calls[0]!
   expect(isAbsolute(request.packedDsh)).toBe(true)
   expect(request.packedDsh.endsWith(join('targets', 'win-x64', 'packed', 'dsh'))).toBe(true)
-  expect(request.sourceTarball.endsWith(join('resources', 'custom-core', 'dsh-tools-0.2.2-rc.3.unified.2.tgz'))).toBe(true)
+  expect(request.sourceTarball.endsWith(join('resources', 'custom-core', 'dsh-tools-0.2.2-rc.5.unified.1.tgz'))).toBe(true)
   expect(request.checksumFile).toBe(`${request.sourceTarball}.sha256`)
   const lastPack = run.run.mock.calls.findIndex(([stage]) => stage.startsWith('--dir native/system/packages/entry pack'))
   const preparePackages = run.run.mock.calls.findIndex(([stage]) => stage === 'run prepare:packages')

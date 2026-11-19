@@ -26,10 +26,10 @@ vi.mock('node:fs', async (importOriginal) => {
   }
 })
 
-const SOURCE_NAME = 'dsh-tools-0.2.2-rc.3.unified.2.tgz'
-const OFFICIAL = 'deepseek-ai-dsh-tools-0.2.2-rc.3.tgz'
-const CUSTOM = 'deepseek-ai-dsh-tools-0.2.2-rc.3.unified.2.tgz'
-const CORE_BYTES = 132805
+const SOURCE_NAME = 'dsh-tools-0.2.2-rc.5.unified.1.tgz'
+const OFFICIAL = 'deepseek-ai-dsh-tools-0.2.2-rc.5.tgz'
+const CUSTOM = 'deepseek-ai-dsh-tools-0.2.2-rc.5.unified.1.tgz'
+const CORE_BYTES = 133050
 
 function sha256(bytes: Buffer): string {
   return createHash('sha256').update(bytes).digest('hex')
@@ -44,7 +44,7 @@ function customCoreBytes(): Buffer {
     try {
       mkdirSync(join(staging, 'package'))
       writeFileSync(join(staging, 'package', 'package.json'), JSON.stringify({
-        name: '@deepseek-ai/dsh-tools', version: '0.2.2-rc.3.unified.2',
+        name: '@deepseek-ai/dsh-tools', version: '0.2.2-rc.5.unified.1',
       }))
       execFileSync('tar', ['-czf', join(staging, 'core.tgz'), '-C', staging, 'package'])
       const tarball = readFileSync(join(staging, 'core.tgz'))
@@ -101,7 +101,7 @@ function refusal(target: Project): Error {
 it('replaces the official core tarball with the controlled input', () => {
   const target = project()
   const official = officialTarball(target.packedDsh)
-  const untouched = join(target.packedDsh, 'deepseek-ai-dsh-llm-0.2.2-rc.3.tgz')
+  const untouched = join(target.packedDsh, 'deepseek-ai-dsh-llm-0.2.2-rc.5.tgz')
   writeFileSync(untouched, Buffer.from('other package'))
   const digest = sha256(customCoreBytes())
 
@@ -110,7 +110,7 @@ it('replaces the official core tarball with the controlled input', () => {
   })
   expect(existsSync(official)).toBe(false)
   expect(readFileSync(join(target.packedDsh, CUSTOM))).toEqual(customCoreBytes())
-  expect(readdirSync(target.packedDsh).sort()).toEqual(['deepseek-ai-dsh-llm-0.2.2-rc.3.tgz', CUSTOM].sort())
+  expect(readdirSync(target.packedDsh).sort()).toEqual(['deepseek-ai-dsh-llm-0.2.2-rc.5.tgz', CUSTOM].sort())
   expect(readFileSync(untouched)).toEqual(Buffer.from('other package'))
   expect(readFileSync(target.source)).toEqual(customCoreBytes())
   expect(readFileSync(target.sidecar, 'utf8')).toBe(`${digest}  ${SOURCE_NAME}\n`)
@@ -155,7 +155,7 @@ it('refuses a controlled tarball whose byte count changed', () => {
 
   const error = refusal(target)
   expect(error.message).toMatch(/custom core/u)
-  expect(error.message).toContain(`${target.source} is 132806 bytes; expected ${CORE_BYTES}`)
+  expect(error.message).toContain(`${target.source} is 133051 bytes; expected ${CORE_BYTES}`)
 })
 
 it('refuses a missing checksum sidecar', () => {
