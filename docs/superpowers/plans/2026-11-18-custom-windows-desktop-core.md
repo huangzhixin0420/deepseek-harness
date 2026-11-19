@@ -1,5 +1,7 @@
 # Windows 定制 Desktop Core 实施计划
 
+> **状态：** 本计划对应已交付的 rc.3 定制构建，其中的版本、tarball、字节数与提交是该轮的事实记录。rc.5 重建以 `2026-11-19-custom-windows-desktop-core-rc5.md` 及其设计为准，不要按本计划的版本与摘要执行新构建。
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** 在 GitHub Actions 构建并验收一份保留用户原有数据的 Windows x64 DSH Desktop 安装包，仅把内置 `@deepseek-ai/dsh-tools` 替换为 `0.2.2-rc.3.unified.2`，验收后可发布 Prerelease。

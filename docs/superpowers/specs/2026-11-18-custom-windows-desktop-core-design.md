@@ -4,7 +4,7 @@
 
 ## 意图
 
-Windows 用户需要一份下载即可安装的 Desktop，其内置 core 的工具准入走统一管线（`@deepseek-ai/dsh-tools@0.2.2-rc.3.unified.2`），其余行为与官方 0.2.2-rc.3 一致。
+Windows 用户需要一份下载即可安装的 Desktop，其内置 core 的工具准入走统一管线（`@deepseek-ai/dsh-tools@0.2.2-rc.5.unified.1`），其余行为与官方 0.2.2-rc.5 一致。
 
 官方安装包把 core 以 npm tarball 闭包封进 `resources/app.asar/dsh`，用户侧没有替换入口，所以定制只能发生在构建期；运行时替换会与 `desktop-runtime.json` 的完整性记录冲突，也被排除在反目标里。
 
@@ -14,7 +14,7 @@ Windows 用户需要一份下载即可安装的 Desktop，其内置 core 的工�
 
 ## 目标
 
-产出 Windows x64 未签名 NSIS 安装包，其内置 core 为 `@deepseek-ai/dsh-tools@0.2.2-rc.3.unified.2`，Desktop、`@deepseek-ai/dsh`、`@deepseek-ai/dsh-desktop-host` 版本保持 `0.2.2-rc.3`。
+产出 Windows x64 未签名 NSIS 安装包，其内置 core 为 `@deepseek-ai/dsh-tools@0.2.2-rc.5.unified.1`，Desktop、`@deepseek-ai/dsh`、`@deepseek-ai/dsh-desktop-host` 版本保持 `0.2.2-rc.5`。
 
 构建、产物校验与覆盖安装验收在同一 GitHub Actions workflow 内完成：`windows-2022` x64 runner，`workflow_dispatch` 手动触发。
 
@@ -88,30 +88,30 @@ Release 是唯一公开下载入口，资产带 SHA256，下载方可自行校�
 
 ## 受控 core 输入
 
-唯一 core 来源是 `apps/desktop/resources/custom-core/dsh-tools-0.2.2-rc.3.unified.2.tgz`，132805 字节，SHA256 `8a03ce849d860f680fddf065b8060ddb9ebd65d2fe5ed9406abc22d7c2f095d7`。
+唯一 core 来源是 `apps/desktop/resources/custom-core/dsh-tools-0.2.2-rc.5.unified.1.tgz`，133050 字节，SHA256 `bcbcc79882b06b01fbd180a507dc613d2a50d95f3065bddf8dff6b01b487328b`。
 
-同级 sidecar `apps/desktop/resources/custom-core/dsh-tools-0.2.2-rc.3.unified.2.tgz.sha256` 以 `sha256sum` 格式记 `<64 位十六进制>  <文件名>`；脚本只从 sidecar 读取期望值，避免脚本常量与文件漂移，sidecar 因此是唯一固定点。
+同级 sidecar `apps/desktop/resources/custom-core/dsh-tools-0.2.2-rc.5.unified.1.tgz.sha256` 以 `sha256sum` 格式记 `<64 位十六进制>  <文件名>`；脚本只从 sidecar 读取期望值，避免脚本常量与文件漂移，sidecar 因此是唯一固定点。
 
 该 tarball 是源输入而非构建产物：不放进 `.desktop-build`，不用机器绝对路径，也不要求从仓库外手工投递。二进制随实现一并提交，本设计只固定位置、字节数与 SHA256。
 
 tarball 不进安装包：`apps/desktop/resources/` 下只有图标经 `extraResources` 显式加入，electron-builder 的 `files` 逐项列出运行时文件，不含该目录。安装包内不存在该 tarball 是验收项之一。
 
-包内 `package.json` 声明 `@deepseek-ai/dsh-tools@0.2.2-rc.3.unified.2`，共 65 个条目，仅含 `lib/`、`locale/`、`src/` 与 `package.json`。
+包内 `package.json` 声明 `@deepseek-ai/dsh-tools@0.2.2-rc.5.unified.1`，共 66 个条目，仅含 `lib/`、`locale/`、`src/` 与 `package.json`。
 
 ## 构建期替换
 
 替换点固定在 `apps/desktop/scripts/package-target.ts` 的 `pack()` 完成 dsh 家族打包之后、`prepare:packages`（即 `apps/desktop/scripts/prepare-package-set.ts`）执行之前。此时 `packedDsh` 目录里是待选闭包，尚未形成 package set，也尚未安装。
 
-替换动作是：校验字节数与 SHA256，移除 `packedDsh` 内官方 `deepseek-ai-dsh-tools-0.2.2-rc.3.tgz`，从受控路径写入 `deepseek-ai-dsh-tools-0.2.2-rc.3.unified.2.tgz`，再复算写入文件的 SHA256。命名沿用 release 打包的 `<unscoped>-<version>.tgz` 约定，与目录内其他 tarball 一致。
+替换动作是：校验字节数与 SHA256，移除 `packedDsh` 内官方 `deepseek-ai-dsh-tools-0.2.2-rc.5.tgz`，从受控路径写入 `deepseek-ai-dsh-tools-0.2.2-rc.5.unified.1.tgz`，再复算写入文件的 SHA256。命名沿用 release 打包的 `<unscoped>-<version>.tgz` 约定，与目录内其他 tarball 一致。
 
 后续链路自动承接，无需额外改动：
 
-- `prepare-package-set.ts` 解出包名与版本，生成 `desktop-packages.json` 记录 `{ name, version: "0.2.2-rc.3.unified.2", file, bytes, integrity: "sha512-…" }`。
+- `prepare-package-set.ts` 解出包名与版本，生成 `desktop-packages.json` 记录 `{ name, version: "0.2.2-rc.5.unified.1", file, bytes, integrity: "sha512-…" }`。
 - `desktopCorePackageOverrides` 为该记录生成 `file:` override，lockfile 因此指向本地 tarball 并校验 integrity。
-- `prepare-dsh.ts` 把 package set 中每个包名传给 `writeDesktopRuntime`，`desktop-runtime.json` 的 `sharedPackages` 因此记录 `@deepseek-ai/dsh-tools@0.2.2-rc.3.unified.2`，`files` 记录每个 runtime 文件的 sha256。
-- `parseDesktopCorePackageSet` 只对 `@deepseek-ai/dsh` 与 `@deepseek-ai/dsh-desktop-host` 做版本等于 `0.2.2-rc.3` 的强校验；`dsh-tools` 允许带 prerelease 前缀，`0.2.2-rc.3.unified.2` 是合法 semver。
+- `prepare-dsh.ts` 把 package set 中每个包名传给 `writeDesktopRuntime`，`desktop-runtime.json` 的 `sharedPackages` 因此记录 `@deepseek-ai/dsh-tools@0.2.2-rc.5.unified.1`，`files` 记录每个 runtime 文件的 sha256。
+- `parseDesktopCorePackageSet` 只对 `@deepseek-ai/dsh` 与 `@deepseek-ai/dsh-desktop-host` 做版本等于 `0.2.2-rc.5` 的强校验；`dsh-tools` 允许带 prerelease 前缀，`0.2.2-rc.5.unified.1` 是合法 semver。
 
-版本不动的另一个理由在包自身：该 tarball 的 `peerDependencies` 要求 `@deepseek-ai/dsh-agent`、`dsh-llm`、`dsh-scope`、`dsh-session`、`dsh-system-prompt`、`dsh-user-approval` 均为 `0.2.2-rc.3`，与官方 runtime 的其余部分正好对齐，因此只有 `dsh-tools` 一个包的版本发生变化。
+版本不动的另一个理由在包自身：该 tarball 的 `peerDependencies` 要求 `@deepseek-ai/dsh-agent`、`dsh-llm`、`dsh-scope`、`dsh-session`、`dsh-system-prompt`、`dsh-user-approval` 均为 `0.2.2-rc.5`，与官方 runtime 的其余部分正好对齐，因此只有 `dsh-tools` 一个包的版本发生变化。
 
 ## 打包环境的未签名例外
 
@@ -127,14 +127,14 @@ tarball 不进安装包：`apps/desktop/resources/` 下只有图标经 `extraRes
 
 以下情况一律中止构建并报告，不产生安装包：
 
-- tarball 缺失、不可读、不是普通文件，或字节数不等于 132805。
+- tarball 缺失、不可读、不是普通文件，或字节数不等于 133050。
 - sidecar 缺失，或格式不是 `sha256sum` 的两段式。
 - SHA256 与 sidecar 不符，或替换后写入文件的 SHA256 与 sidecar 不符；报告须同时给出期望值与实际值。
-- 替换前 `packedDsh` 内官方 `deepseek-ai-dsh-tools-0.2.2-rc.3.tgz` 不是恰好一份，即缺失或重复。
+- 替换前 `packedDsh` 内官方 `deepseek-ai-dsh-tools-0.2.2-rc.5.tgz` 不是恰好一份，即缺失或重复。
 - 替换前已存在任何定制 `dsh-tools` tarball，即重包。
 - 替换后定制 tarball 不是恰好一份，或官方 tarball 仍有残留。
-- `desktop-packages.json` 中 `@deepseek-ai/dsh-tools` 记录不是恰好一条，或版本不是 `0.2.2-rc.3.unified.2`。
-- `@deepseek-ai/dsh` 或 `@deepseek-ai/dsh-desktop-host` 版本不等于 `0.2.2-rc.3`（既有 `RELEASE_PACKAGES` 校验）。
+- `desktop-packages.json` 中 `@deepseek-ai/dsh-tools` 记录不是恰好一条，或版本不是 `0.2.2-rc.5.unified.1`。
+- `@deepseek-ai/dsh` 或 `@deepseek-ai/dsh-desktop-host` 版本不等于 `0.2.2-rc.5`（既有 `RELEASE_PACKAGES` 校验）。
 
 替换点不得依赖 `prepare-package-set.ts` 的 `duplicate packed package` 兜底：那条规则在更晚的阶段才触发，报错也不指向重包原因。
 
@@ -184,10 +184,10 @@ Artifact 只是同一次运行内的验收输入，不作为下载入口，也�
 
 ### 基线安装包
 
-覆盖安装验收需要一份官方 `0.2.2-rc.3` 安装包作为基线段。两个方案都可行，计划阶段必须选定一个并写进 workflow，不留为未知：
+覆盖安装验收需要一份官方 `0.2.2-rc.5` 安装包作为基线段。两个方案都可行，计划阶段必须选定一个并写进 workflow，不留为未知：
 
-- 同 workflow 基线构建：在官方 `0.2.2-rc.3` 源码提交上以同一工具链构建 `package:win:x64:unsigned`，基线与定制包的工具链、目录布局与安装参数完全一致，无外部资产来源。
-- 固定官方资产：记录官方 `0.2.2-rc.3` Windows x64 安装包的下载地址与 SHA256，验收前校验 SHA 后使用。
+- 同 workflow 基线构建：在官方 `0.2.2-rc.5` 源码提交上以同一工具链构建 `package:win:x64:unsigned`，基线与定制包的工具链、目录布局与安装参数完全一致，无外部资产来源。
+- 固定官方资产：记录官方 `0.2.2-rc.5` Windows x64 安装包的下载地址与 SHA256，验收前校验 SHA 后使用。
 
 计划阶段选定后，基线固定点（提交或 URL + SHA256）写入 workflow，验收日志记录实际使用的基线与摘要。
 
@@ -207,13 +207,13 @@ Artifact 只是同一次运行内的验收输入，不作为下载入口，也�
 
 替换 helper 的负向测试同时放入官方与定制两份 tarball 时，必须抛出显式的重包错误，而不是让后续 package set 报通用重复。
 
-### unified.2 生效验收
+### unified.1 生效验收
 
 除包版本、字节数与 manifest 记录之外，用测试专用 fixture 插件验证 core 行为的差异。fixture 只存在于隔离测试环境的 profile 插件目录，不进安装包，也不要求任何业务插件参与。
 
-fixture 在其 scope 内注册自己的工具，并施加 `includeOwn: true` 的 allow-list。该清单只写一个合法的继承工具名，不含这个 own 工具，以免 rc3 以未知全局工具拒绝该调用。
+fixture 在其 scope 内注册自己的工具，并施加 `includeOwn: true` 的 allow-list。该清单只写一个合法的继承工具名，不含这个 own 工具，以免官方 core 以未知全局工具拒绝该调用。
 
-验收判定：unified.2 的目录投影不列出该工具，调用被拒绝；官方 rc3 上同一 fixture 的 own 工具可见且可执行。两次观察使用同一 fixture 字节、同一 scope 配置、同一调用参数。
+验收判定：unified.1 的目录投影不列出该工具，调用被拒绝；官方 rc.5 上同一 fixture 的 own 工具可见且可执行。两次观察使用同一 fixture 字节、同一 scope 配置、同一调用参数。
 
 fixture 的来源路径与哈希记入验收日志，以证明测试输入本身可复现。
 
@@ -231,25 +231,25 @@ Release 是用户本次明确授权的将来目标：本次只落设计，不 pu
 
 构建与 manifest：
 
-- workflow 在 `windows-2022` x64 上完成构建，`desktop-packages.json` 含且仅含一条 `@deepseek-ai/dsh-tools` 记录，版本 `0.2.2-rc.3.unified.2`，`integrity` 对应替换后 tarball 的 sha512。
-- `desktop-runtime.json` 的 `release.version` 为 `0.2.2-rc.3`，`sharedPackages` 含 `@deepseek-ai/dsh-tools@0.2.2-rc.3.unified.2`。
+- workflow 在 `windows-2022` x64 上完成构建，`desktop-packages.json` 含且仅含一条 `@deepseek-ai/dsh-tools` 记录，版本 `0.2.2-rc.5.unified.1`，`integrity` 对应替换后 tarball 的 sha512。
+- `desktop-runtime.json` 的 `release.version` 为 `0.2.2-rc.5`，`sharedPackages` 含 `@deepseek-ai/dsh-tools@0.2.2-rc.5.unified.1`。
 - 构建日志无 SHA 校验失败，替换点报告期望与实际摘要。
 
 安装包内容：
 
-- 解出安装包内的 `resources/app.asar`，`dsh/node_modules/@deepseek-ai/dsh-tools/package.json` 版本为 `0.2.2-rc.3.unified.2`。
+- 解出安装包内的 `resources/app.asar`，`dsh/node_modules/@deepseek-ai/dsh-tools/package.json` 版本为 `0.2.2-rc.5.unified.1`。
 - 同一路径下不存在 `dsh-tool-registry`，不存在任何业务插件包。
 - 全部 `.tgz` 输入中 `@deepseek-ai/dsh-tools` 只有一份，且不含受控 core tarball。
 - 不存在 `app-update.yml` 等更新源配置。
 
 覆盖安装与数据保留：
 
-- 在 runner 的一次性用户配置中安装基线 `0.2.2-rc.3`，产生可识别数据：至少一个会话、非默认设置项、一个已启用插件（可用同一 fixture 插件，无需业务插件）。
+- 在 runner 的一次性用户配置中安装基线 `0.2.2-rc.5`，产生可识别数据：至少一个会话、非默认设置项、一个已启用插件（可用同一 fixture 插件，无需业务插件）。
 - 记录哈希清单：`%USERPROFILE%\.dsh` 下 `sessions`、settings、credentials、`profiles/desktop` 的 `package.json` 与 `dsh.profile.bundles`，以及 `%APPDATA%\@deepseek-ai\dsh-desktop\desktop\*.json`。
 - 安装定制包覆盖同一目录，再次记录同一清单，逐项哈希一致。
 - 启动应用：Host 健康检查通过，上述会话可打开，插件仍处于启用状态。
 
-unified.2 生效：
+unified.1 生效：
 
 - fixture 插件在定制包上被拒绝且不出现在目录投影中。
 - 同一 fixture 在基线包上可见且可执行。

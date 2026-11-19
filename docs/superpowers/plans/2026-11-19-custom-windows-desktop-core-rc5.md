@@ -19,18 +19,18 @@
 
 ### Task 1: 迁移定制历史
 
-- [ ] 从 `dsh-v0.2.2-rc.5` 确认工作树干净并提交本设计与计划。
-- [ ] 顺序 cherry-pick `39163dd30f703a79079e2d2446545cff3c453738..4adb11d8b66447e82787edb3b31c7695ee9d91d7`。
-- [ ] 解决真实交叉冲突；生成文件由生成器重建，不手工拼接。
-- [ ] 对照原分支确认 24 个定制提交均有等价提交，rc.5 官方搜索改动保持存在。
+- [x] 从 `dsh-v0.2.2-rc.5` 确认工作树干净并提交本设计与计划。
+- [x] 顺序 cherry-pick `39163dd30f703a79079e2d2446545cff3c453738..4adb11d8b66447e82787edb3b31c7695ee9d91d7`。
+- [x] 解决真实交叉冲突；生成文件由生成器重建，不手工拼接。
+- [x] 对照原分支确认 24 个定制提交均有等价提交，rc.5 官方搜索改动保持存在。
 
 ### Task 2: 重建受控 core 与固定引用
 
-- [ ] 把定制包版本设为 `0.2.2-rc.5.unified.1`，重新构建并打包 `dsh-tools`。
-- [ ] 替换 `apps/desktop/resources/custom-core` 中旧 tarball 与 sidecar，记录实测字节数和 SHA256。
-- [ ] 将所有 rc.3 定制版本、tarball 名、摘要、官方基线 SHA 更新为 rc.5 对应值。
-- [ ] 将 `BASELINE_PACKAGING_SHA` 更新为迁移后的等价提交，并核对精确引用白名单。
-- [ ] 运行受控替换、基线准备、产物审计和 workflow 静态测试。
+- [x] 把定制包版本设为 `0.2.2-rc.5.unified.1`，重新构建并打包 `dsh-tools`。
+- [x] 替换 `apps/desktop/resources/custom-core` 中旧 tarball 与 sidecar，记录实测字节数和 SHA256（133050 字节，`bcbcc79882b06b01fbd180a507dc613d2a50d95f3065bddf8dff6b01b487328b`）。
+- [x] 将所有 rc.3 定制版本、tarball 名、摘要、官方基线 SHA 更新为 rc.5 对应值。
+- [x] 将 `BASELINE_PACKAGING_SHA` 更新为迁移后的等价提交，并核对精确引用白名单。
+- [x] 运行受控替换、基线准备、产物审计和 workflow 静态测试。
 
 ### Task 3: 本地验证与推送
 

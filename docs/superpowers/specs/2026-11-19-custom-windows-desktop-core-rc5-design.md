@@ -16,9 +16,9 @@
 
 ## 受控 core 与基线
 
-从迁移后的 `packages/core/tools` 重新打包 `dsh-tools-0.2.2-rc.5.unified.1.tgz`，不得重命名或复用 rc.3 tarball。sidecar 记录新文件的实际 SHA256；替换、审计、测试和文档中的版本、字节数、摘要与 tarball 名称全部以新产物为准。
+从迁移后的 `packages/core/tools` 重新打包 `dsh-tools-0.2.2-rc.5.unified.1.tgz`，不得重命名或复用 rc.3 tarball。sidecar 记录新文件的实际 SHA256；替换、审计、测试和文档中的版本、字节数、摘要与 tarball 名称全部以新产物为准：133050 字节，SHA256 `bcbcc79882b06b01fbd180a507dc613d2a50d95f3065bddf8dff6b01b487328b`，包内 `peerDependencies` 对齐 `0.2.2-rc.5`。
 
-覆盖安装基线固定为官方 rc.5 提交 `9c2670d3bce5275e0d1610272958121af87787bb`。`BASELINE_PACKAGING_SHA` 指向挑入后与 `89e1904d55e7f4b9560595addfecd48a088d88bc` 等价的新提交；仓库引用白名单只增加仍被文档使用的精确固定引用。
+覆盖安装基线固定为官方 rc.5 提交 `9c2670d3bce5275e0d1610272958121af87787bb`。`BASELINE_PACKAGING_SHA` 指向 `685be3878a03847c9fdc13a303ed87c7bf00ef2b`，即原 `89e1904d55e7f4b9560595addfecd48a088d88bc` 在当前分支的等价提交；仓库引用白名单只增加仍被文档使用的精确固定引用。
 
 ## 兼容性边界
 
