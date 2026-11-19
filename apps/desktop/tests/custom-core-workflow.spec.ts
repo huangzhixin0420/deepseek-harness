@@ -1,7 +1,7 @@
 /** Static acceptance for the Windows custom-core build, installation acceptance, and prerelease pipeline. */
 import { spawnSync } from 'node:child_process'
 import {
-  copyFileSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync,
+  copyFileSync, existsSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync,
 } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join, resolve } from 'node:path'
@@ -18,6 +18,21 @@ const ACCEPTANCE_FUNCTIONS = join(APP_ROOT, 'scripts', 'custom-core-acceptance-f
 const FIXTURE_ROOT = join(APP_ROOT, 'scripts', 'fixtures', 'unified-own-tool-plugin')
 const FIXTURE_MANIFEST = join(FIXTURE_ROOT, 'package.json')
 const FIXTURE_ENTRY = join(FIXTURE_ROOT, 'index.mjs')
+const hasBuiltHost = [
+  'vendor/cordis/lib/index.js',
+  'vendor/loader/lib/index.js',
+  'vendor/include/lib/index.js',
+  'packages/llm/llm/lib/index.js',
+  'packages/core/session/lib/index.js',
+  'packages/session/session-projection/lib/index.js',
+  'packages/core/system-prompt/lib/index.js',
+  'packages/core/tools/lib/index.js',
+  'packages/core/tool-executor-native/lib/index.js',
+  'packages/core/agent/lib/index.js',
+  'packages/session/session-persistence-jsonl/lib/index.js',
+  'packages/core/agent-loop/lib/index.js',
+  'packages/session/session-checkpoint-policy/lib/index.js',
+].every(path => existsSync(join(REPOSITORY, path)))
 const hasPwsh = spawnSync('pwsh', ['-NoLogo', '-NoProfile', '-NonInteractive', '-Command', '$true'], { encoding: 'utf8' }).status === 0
 
 interface WorkflowStep {
@@ -246,7 +261,7 @@ it('isolates the fixture from the product package', () => {
   expect(readFileSync(WORKFLOW_PATH, 'utf8')).not.toContain('apps/desktop/scripts/fixtures')
 })
 
-it.each([false, true])('creates a real Agent through the Loader before observing tools (catalog absent: %s)', (catalogAbsent) => {
+it.skipIf(!hasBuiltHost).each([false, true])('creates a real Agent through the Loader before observing tools (catalog absent: %s)', (catalogAbsent) => {
   const root = mkdtempSync(join(tmpdir(), 'custom-core-host-fixture-'))
   const reportPath = join(root, 'observation.json')
   const afterPath = join(root, 'after.json')
